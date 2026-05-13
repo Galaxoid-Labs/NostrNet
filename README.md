@@ -31,6 +31,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [21](https://github.com/nostr-protocol/nips/blob/master/21.md) | `nostr:` URI scheme |
 | [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form markdown articles & drafts (kinds 30023 / 30024) |
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets (mute lists, bookmarks, follow sets, …) with public + NIP-44 self-encrypted private items |
+| [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
 | [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | AUTH (challenge parsed; client-side helper pending) |
 | [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | v2 encrypted payloads (ChaCha20 + HMAC-SHA256 + HKDF) |
 | [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap |
@@ -594,6 +595,40 @@ Parameterized-set kinds (≥ 30000) require an identifier;
 Encryption uses **NIP-44 self-encryption** (modern, what current clients
 write). Lists encrypted by older NIP-04 clients leave `PrivateItems` empty;
 public items remain readable. NIP-04 backward-decoding is on the roadmap.
+
+---
+
+## NIP-65 relay list metadata
+
+A user advertises their preferred read/write relays via a single
+replaceable kind-10002 event. Other clients fetch this to know where to
+publish events that should reach them, and where to look for events they
+authored.
+
+```csharp
+using NostrNet.RelayList;
+
+// Build and publish
+var ev = RelayListMetadata.Create()
+    .AddRelay("wss://relay.damus.io")          // both read and write
+    .AddReadRelay("wss://relay.nostr.band")    // read-only
+    .AddWriteRelay("wss://nos.lol")            // write-only
+    .Sign(key);
+
+await client.PublishAsync(ev);
+
+// Parse a received event
+var list = RelayListMetadata.FromEvent(receivedEvent);
+Console.WriteLine($"{list.Owner.ToNpub()} writes to: {string.Join(", ", list.WriteRelays)}");
+Console.WriteLine($"{list.Owner.ToNpub()} reads from: {string.Join(", ", list.ReadRelays)}");
+
+// Each entry carries the original URL + usage marker
+foreach (var entry in list.Relays)
+    Console.WriteLine($"{entry.Url} ({entry.Usage})");
+```
+
+`RelayListMetadata.TryFromEvent(ev, out var list)` is the non-throwing
+variant for events that may or may not be NIP-65.
 
 ---
 

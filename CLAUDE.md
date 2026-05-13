@@ -59,8 +59,9 @@ warnings fail the build. MIT license, Galaxoid Labs.
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
 | 51 | lists & sets (public + NIP-44 self-encrypted private items) | Crypto/Lists/ |
 | 59 | gift wrap (used by NIP-17) | Crypto/Nip17.cs |
+| 65 | relay list metadata (kind 10002) | Core/RelayList/ |
 
-**Deferred:** NIP-02 contacts, NIP-07/46/65, NIP-57 zaps, NIP-09/25/10.
+**Deferred:** NIP-02 contacts, NIP-07/46, NIP-57 zaps, NIP-09/25/10.
 Mechanical once needed.
 
 ## Test vectors
