@@ -62,5 +62,18 @@ public interface IRelayClient : IAsyncDisposable
     /// disable auto-auth. Auto-auth runs as a fire-and-forget background
     /// task; failures are silently swallowed.
     /// </summary>
+    /// <remarks>
+    /// When <see cref="AutoAuthKey"/> is non-null, <see cref="PublishAsync"/>
+    /// also transparently retries (once) on <c>auth-required</c> rejections,
+    /// awaiting the in-flight AUTH first.
+    /// </remarks>
     PrivateKey? AutoAuthKey { get; set; }
+
+    /// <summary>
+    /// Awaits the most recent in-flight auto-AUTH attempt, if any. Returns
+    /// immediately if no auto-auth is in progress. Used by higher layers
+    /// (e.g. <c>RelayPool</c>) that want to wait for AUTH before resuming a
+    /// rejected operation.
+    /// </summary>
+    Task WaitForAuthAsync(CancellationToken cancellationToken = default);
 }

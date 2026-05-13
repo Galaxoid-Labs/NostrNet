@@ -32,6 +32,17 @@ public static class Nip42
     /// <summary>The event kind used for NIP-42 AUTH events.</summary>
     public const int AuthEventKind = 22242;
 
+    /// <summary>The NIP-01 / NIP-42 rejection-reason prefix indicating an AUTH is required.</summary>
+    public const string AuthRequiredPrefix = "auth-required";
+
+    /// <summary>
+    /// True if <paramref name="reason"/> is a NIP-42 <c>auth-required</c>
+    /// rejection (case-insensitive, optional <c>":</c>" suffix).
+    /// </summary>
+    public static bool IsAuthRequired(string? reason)
+        => reason is not null
+            && reason.StartsWith(AuthRequiredPrefix, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Builds a signed NIP-42 auth event for the given challenge and relay.
     /// </summary>

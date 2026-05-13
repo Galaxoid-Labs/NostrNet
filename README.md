@@ -636,23 +636,33 @@ variant for events that may or may not be NIP-65.
 
 Some relays require NIP-42 authentication before they'll serve
 subscriptions or accept publishes. **Auto-auth is on by default** — when
-`NostrClient` is constructed with a key, any `AUTH` challenge from a
-connected relay is answered automatically in the background:
+`NostrClient` is constructed with a key, every `AUTH` challenge is answered
+in the background, and any publish or subscription rejected with
+`auth-required` is transparently retried once AUTH succeeds. **You don't
+need to write any retry code.**
 
 ```csharp
-// Default — auto-auth is enabled
 await using var client = await NostrClient.Builder(key)
     .UseRelays("wss://auth-required-relay.example.com")
     .ConnectAsync();
-// AUTH happens transparently as challenges arrive.
+
+// Just publish. If the relay rejects with auth-required, the library
+// waits for AUTH and resends. You only see the final result.
+var results = await client.PostNoteAsync("hello");
+
+// Same for subscriptions — if a relay closes the sub with auth-required,
+// the library re-subscribes after AUTH. The consumer never sees the gap.
+await foreach (var received in client.SubscribeNotesAsync(limit: 50))
+    Console.WriteLine(received.Event.Content);
 ```
 
-Auto-auth follows the key. If you call `client.SetKey(...)` later (e.g.,
-the user signed in after browsing anonymously), auto-auth activates with
-the new key. `client.ClearKey()` disables it again.
+Auto-auth follows the key. If you call `client.SetKey(...)` later (the
+user signed in after browsing anonymously), auto-auth activates with the
+new key. `client.ClearKey()` disables it. You can also toggle at runtime:
+`client.AutoAuth = false;`.
 
-**Opt out** if you want explicit control over auth — e.g., to prompt the
-user, log AUTH failures, or only authenticate against specific relays:
+**Opt out** if you want explicit control — e.g., to prompt the user
+before AUTHing, log every AUTH attempt, or skip AUTH on specific relays:
 
 ```csharp
 await using var client = await NostrClient.Builder(key)
@@ -660,7 +670,7 @@ await using var client = await NostrClient.Builder(key)
     .WithAutoAuth(false)
     .ConnectAsync();
 
-// Now AUTH is manual:
+// Manual flow — surface the rejection, AUTH explicitly, retry yourself
 var results = await client.PostNoteAsync("hello");
 if (results.Values.Any(r => !r.Accepted && r.Message.StartsWith("auth-required")))
 {
@@ -672,31 +682,38 @@ if (results.Values.Any(r => !r.Accepted && r.Message.StartsWith("auth-required")
 }
 ```
 
-You can also toggle auto-auth at runtime: `client.AutoAuth = false;`.
-
-### How it works
+### How auto-retry works
 
 - The receive loop captures each `["AUTH", "<challenge>"]` into per-relay
   state (`RelayClient.LatestAuthChallenge`).
-- When auto-auth is on and a key is set, `RelayClient` fires a
-  fire-and-forget `Task.Run` that signs the kind-22242 event and sends
-  `["AUTH", <event>]`. Failures are silently swallowed (rejection by the
-  relay is best-effort feedback only).
-- For visibility into auth results, disable auto-auth and call
-  `AuthenticateAllAsync()` yourself.
+- When auto-auth is on and a key is set, `RelayClient` fires a background
+  `Task.Run` that signs the kind-22242 event and sends `["AUTH", <event>]`.
+- **Publishes:** if `PublishAsync` gets a rejection whose message starts
+  with `auth-required`, it awaits the in-flight AUTH (or triggers one if a
+  challenge has just arrived) and resends the event once. Only the result
+  of the second attempt is surfaced.
+- **Subscriptions:** each per-relay pump task in `RelayPool` watches for
+  `CLOSED auth-required`. When it sees one (with auto-auth on), it waits
+  for AUTH then transparently re-issues the `REQ` — the consumer's
+  `await foreach` keeps yielding events without breaking.
+- Retry is **capped at one attempt per operation** so an unresolvable
+  AUTH (key not on the relay's allow-list, expired payment, etc.) doesn't
+  loop forever. The second rejection surfaces to the caller normally.
 
-### Caveats
+### Single-relay control
 
-- **Publishes can race with the initial AUTH.** If you call
-  `PostNoteAsync` immediately after `ConnectAsync`, the publish may reach
-  the relay before auto-auth completes and be rejected with
-  `auth-required`. Either wait briefly after connect, or handle the
-  rejection and retry.
-- **Single-relay control:** drop down to `RelayClient` for
-  `LatestAuthChallenge` + `AuthenticateAsync(key)`. For remote-signer
-  setups, use `NostrNet.Auth.Nip42.BuildAuthEvent(key, relayUri, challenge)`
-  directly — it returns the signed kind-22242 event ready to wrap in
-  `["AUTH", ...]`.
+Drop down to `RelayClient` (via the `IRelayClient` returned by
+`RelayPool` or constructed manually) when you need per-relay visibility:
+
+```csharp
+string? challenge = relayClient.LatestAuthChallenge;
+PublishResult r = await relayClient.AuthenticateAsync(myKey);
+await relayClient.WaitForAuthAsync();   // block until current auto-auth finishes
+```
+
+For remote-signer flows (where signing happens elsewhere), use
+`NostrNet.Auth.Nip42.BuildAuthEvent(key, relayUri, challenge)` directly —
+returns the signed kind-22242 event ready to wrap in `["AUTH", ...]`.
 
 ---
 

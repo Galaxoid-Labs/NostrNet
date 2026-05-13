@@ -3,6 +3,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using NostrNet.Auth;
 using NostrNet.Events;
 
 namespace NostrNet.Relay;
@@ -241,50 +242,90 @@ public sealed class RelayPool : IAsyncDisposable
 
         var pumpTasks = snapshot.Select(client => Task.Run(async () =>
         {
-            try
+            // Per-relay retry counter; capped so an unresolvable auth-required
+            // (e.g. our key isn't on the relay's allow-list) doesn't loop.
+            int authRetries = 0;
+            const int MaxAuthRetries = 1;
+
+            while (true)
             {
-                await foreach (var ev in client.SubscribeAsync(subscriptionId, filters, linked.Token).ConfigureAwait(false))
+                bool retryAfterAuth = false;
+                try
                 {
-                    switch (ev)
+                    await foreach (var ev in client.SubscribeAsync(subscriptionId, filters, linked.Token).ConfigureAwait(false))
                     {
-                        case SubscriptionEventReceived received:
-                            // No dedup — consumers see every relay's
-                            // delivery of every event. The SubscriptionEventReceived.Relay
-                            // tells them where each one came from. Stateful
-                            // dedup (if needed) belongs in the consumer, who
-                            // knows what storage / lifetime they want.
-                            await merged.Writer.WriteAsync(received, linked.Token).ConfigureAwait(false);
+                        // Transparent re-subscribe on auth-required when
+                        // auto-auth is configured.
+                        if (ev is SubscriptionClosed cl
+                            && client.AutoAuthKey is not null
+                            && authRetries < MaxAuthRetries
+                            && Nip42.IsAuthRequired(cl.Reason))
+                        {
+                            retryAfterAuth = true;
+                            authRetries++;
                             break;
+                        }
 
-                        case SubscriptionEndOfStoredEvents:
-                            if (Interlocked.Increment(ref eoseCount) == totalRelays)
-                            {
-                                await merged.Writer.WriteAsync(new SubscriptionEndOfStoredEvents(), linked.Token).ConfigureAwait(false);
-                            }
+                        switch (ev)
+                        {
+                            case SubscriptionEventReceived received:
+                                await merged.Writer.WriteAsync(received, linked.Token).ConfigureAwait(false);
+                                break;
 
-                            break;
+                            case SubscriptionEndOfStoredEvents:
+                                if (Interlocked.Increment(ref eoseCount) == totalRelays)
+                                {
+                                    await merged.Writer.WriteAsync(new SubscriptionEndOfStoredEvents(), linked.Token).ConfigureAwait(false);
+                                }
 
-                        case SubscriptionClosed closed:
-                            if (Interlocked.Increment(ref closedCount) == totalRelays)
-                            {
-                                await merged.Writer.WriteAsync(new SubscriptionClosed(closed.Reason), linked.Token).ConfigureAwait(false);
-                                merged.Writer.TryComplete();
-                            }
+                                break;
 
-                            break;
+                            case SubscriptionClosed closed:
+                                if (Interlocked.Increment(ref closedCount) == totalRelays)
+                                {
+                                    await merged.Writer.WriteAsync(new SubscriptionClosed(closed.Reason), linked.Token).ConfigureAwait(false);
+                                    merged.Writer.TryComplete();
+                                }
+
+                                break;
+                        }
                     }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                // Caller cancelled or pool disposing — clean exit.
-            }
-            catch (Exception)
-            {
-                // Treat any per-relay failure as a close for that relay's contribution.
-                if (Interlocked.Increment(ref closedCount) == totalRelays)
+                catch (OperationCanceledException)
                 {
-                    merged.Writer.TryComplete();
+                    break;
+                }
+                catch (Exception)
+                {
+                    // Treat any per-relay transport failure as a close.
+                    if (Interlocked.Increment(ref closedCount) == totalRelays)
+                    {
+                        merged.Writer.TryComplete();
+                    }
+
+                    break;
+                }
+
+                if (!retryAfterAuth)
+                {
+                    break;
+                }
+
+                // Wait for the AUTH triggered by the auth-required CLOSED
+                // (auto-auth fired when the challenge arrived) before
+                // re-subscribing on this relay.
+                try
+                {
+                    await client.WaitForAuthAsync(linked.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch
+                {
+                    // Auth task itself failed; try the re-subscribe anyway —
+                    // it'll likely just fail again and the retry cap stops the loop.
                 }
             }
         }, linked.Token)).ToArray();

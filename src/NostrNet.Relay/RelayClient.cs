@@ -40,6 +40,7 @@ public sealed class RelayClient : IRelayClient
     private Uri? _uri;
     private volatile string? _latestAuthChallenge;
     private PrivateKey? _autoAuthKey;
+    private Task<PublishResult>? _inFlightAuthTask;
     private int _state; // 0=new, 1=connecting, 2=connected, 3=disposed
 
     /// <inheritdoc/>
@@ -88,6 +89,26 @@ public sealed class RelayClient : IRelayClient
     public async Task<PublishResult> PublishAsync(NostrEvent ev, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(ev);
+
+        var result = await PublishOnceAsync(ev, cancellationToken).ConfigureAwait(false);
+
+        // When auto-auth is on, transparently retry once on auth-required.
+        // Per NIP-42 the AUTH challenge arrives before the rejection, so
+        // auto-auth should already be in flight from Dispatch; we just wait
+        // for it to finish before resending.
+        if (_autoAuthKey is not null
+            && !result.Accepted
+            && Nip42.IsAuthRequired(result.Message))
+        {
+            await WaitForAuthOrTriggerAsync(cancellationToken).ConfigureAwait(false);
+            result = await PublishOnceAsync(ev, cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    private async Task<PublishResult> PublishOnceAsync(NostrEvent ev, CancellationToken cancellationToken)
+    {
         EnsureConnected();
 
         var tcs = new TaskCompletionSource<PublishResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -305,28 +326,76 @@ public sealed class RelayClient : IRelayClient
 
     private void TryAutoAuth()
     {
-        // Auto-auth is best-effort. Conditions: configured key, a challenge
-        // is available, and we're connected. Failures (no challenge yet,
-        // not connected, transport errors, rejection) are silently swallowed
-        // — surfacing them would require a more elaborate notification
-        // mechanism we haven't built yet.
         PrivateKey? key = _autoAuthKey;
         if (key is null || _latestAuthChallenge is null || _state != 2)
         {
             return;
         }
 
-        _ = Task.Run(async () =>
+        // Don't start a second AUTH while one is in flight — the first
+        // covers the current challenge, and PublishAsync's retry path
+        // awaits this task to know when it's safe to retry.
+        var existing = _inFlightAuthTask;
+        if (existing is not null && !existing.IsCompleted)
+        {
+            return;
+        }
+
+        _inFlightAuthTask = Task.Run(async () =>
         {
             try
             {
-                await AuthenticateAsync(key, CancellationToken.None).ConfigureAwait(false);
+                return await AuthenticateAsync(key, CancellationToken.None).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
-                // best-effort
+                // Convert transport / state errors into a "not accepted" result
+                // so callers awaiting the task can pattern-match uniformly.
+                return new PublishResult(false, $"auto-auth failed: {ex.Message}");
             }
         });
+    }
+
+    /// <inheritdoc/>
+    public async Task WaitForAuthAsync(CancellationToken cancellationToken = default)
+    {
+        var task = _inFlightAuthTask;
+        if (task is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // Swallow auth-task failures — the caller checks
+            // LatestAuthChallenge / retries / etc.
+        }
+    }
+
+    private async Task WaitForAuthOrTriggerAsync(CancellationToken cancellationToken)
+    {
+        // The relay should send AUTH challenge before auth-required, but
+        // honor the small race where they arrive in the wrong order.
+        for (int waitMs = 0; _latestAuthChallenge is null && waitMs < 2000; waitMs += 50)
+        {
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (_latestAuthChallenge is null)
+        {
+            return;
+        }
+
+        TryAutoAuth();
+        await WaitForAuthAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private void EnsureConnected()
