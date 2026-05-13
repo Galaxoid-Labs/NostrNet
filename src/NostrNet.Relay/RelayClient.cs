@@ -6,7 +6,9 @@ using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Channels;
+using NostrNet.Auth;
 using NostrNet.Events;
+using NostrNet.Keys;
 using SysEncoding = System.Text.Encoding;
 
 namespace NostrNet.Relay;
@@ -36,10 +38,14 @@ public sealed class RelayClient : IRelayClient
     private Task? _sendTask;
     private Task? _receiveTask;
     private Uri? _uri;
+    private volatile string? _latestAuthChallenge;
     private int _state; // 0=new, 1=connecting, 2=connected, 3=disposed
 
     /// <inheritdoc/>
     public Uri? Uri => _uri;
+
+    /// <inheritdoc/>
+    public string? LatestAuthChallenge => _latestAuthChallenge;
 
     /// <inheritdoc/>
     public bool IsConnected => _state == 2 && _webSocket.State == WebSocketState.Open;
@@ -79,6 +85,55 @@ public sealed class RelayClient : IRelayClient
         }
 
         await _outgoing.Writer.WriteAsync(RelayProtocol.BuildPublishMessage(ev), cancellationToken).ConfigureAwait(false);
+
+        using (cancellationToken.Register(state =>
+        {
+            var t = (TaskCompletionSource<PublishResult>)state!;
+            t.TrySetCanceled();
+        }, tcs))
+        {
+            try
+            {
+                return await tcs.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                _pendingPublishes.TryRemove(idHex, out _);
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<PublishResult> AuthenticateAsync(
+        PrivateKey key,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        EnsureConnected();
+
+        string? challenge = _latestAuthChallenge;
+        if (challenge is null)
+        {
+            throw new InvalidOperationException(
+                "No AUTH challenge has been received from this relay. The relay must send " +
+                "[\"AUTH\", challenge] before AuthenticateAsync can be called.");
+        }
+
+        // Build + sign the NIP-42 kind-22242 event. _uri is non-null because
+        // EnsureConnected passed.
+        NostrEvent authEvent = Nip42.BuildAuthEvent(key, _uri!, challenge);
+
+        var tcs = new TaskCompletionSource<PublishResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        string idHex = authEvent.Id.ToHex();
+
+        if (!_pendingPublishes.TryAdd(idHex, tcs))
+        {
+            throw new InvalidOperationException($"A publish/auth for event id {idHex} is already in flight.");
+        }
+
+        // Send via the existing serialized outgoing channel; the relay's OK
+        // response keyed by event id resolves the TCS through Dispatch.
+        await _outgoing.Writer.WriteAsync(RelayProtocol.BuildAuthMessage(authEvent), cancellationToken).ConfigureAwait(false);
 
         using (cancellationToken.Register(state =>
         {
@@ -401,11 +456,13 @@ public sealed class RelayClient : IRelayClient
 
                 break;
 
+            case AuthChallengeMessage auth:
+                _latestAuthChallenge = auth.Challenge;
+                break;
+
             case NoticeMessage:
-            case AuthChallengeMessage:
-                // Surface via events on a future revision; for v1 these are
-                // observed at the protocol layer but not threaded through the
-                // public API.
+                // Notices are observed at the protocol layer but not threaded
+                // through the public API yet.
                 break;
         }
     }

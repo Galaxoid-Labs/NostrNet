@@ -55,7 +55,7 @@ warnings fail the build. MIT license, Galaxoid Labs.
 | 19 | bech32 entities (npub/nsec/note/nprofile/nevent/naddr) | Core/Nip19/ |
 | 21 | `nostr:` URI scheme | Core/Nip19/Nip21.cs |
 | 23 | long-form articles & drafts (30023/30024) | Core/Articles/ |
-| 42 | AUTH messages parsed; client-side helper not exposed | Relay (parse only) |
+| 42 | client-relay AUTH (challenge capture + auth event + send) | Core/Auth/ + Relay |
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
 | 51 | lists & sets (public + NIP-44 self-encrypted private items) | Crypto/Lists/ |
 | 59 | gift wrap (used by NIP-17) | Crypto/Nip17.cs |

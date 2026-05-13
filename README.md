@@ -32,7 +32,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form markdown articles & drafts (kinds 30023 / 30024) |
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets (mute lists, bookmarks, follow sets, …) with public + NIP-44 self-encrypted private items |
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
-| [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | AUTH (challenge parsed; client-side helper pending) |
+| [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | Client-relay AUTH (challenge capture + auth event builder + send/await OK) |
 | [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | v2 encrypted payloads (ChaCha20 + HMAC-SHA256 + HKDF) |
 | [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap |
 
@@ -629,6 +629,48 @@ foreach (var entry in list.Relays)
 
 `RelayListMetadata.TryFromEvent(ev, out var list)` is the non-throwing
 variant for events that may or may not be NIP-65.
+
+---
+
+## NIP-42 relay AUTH
+
+Some relays require NIP-42 authentication before they'll serve subscriptions
+or accept publishes. When you connect, the relay sends an
+`["AUTH", "<challenge>"]` message; the library captures the latest
+challenge per connection. Respond at any time by calling
+`AuthenticateAllAsync` — the library signs the kind-22242 event, sends
+`["AUTH", <event>]`, and awaits the per-relay `OK`:
+
+```csharp
+// Try a publish; if any relay rejects with auth-required, AUTH and retry.
+var results = await client.PostNoteAsync("hello");
+
+if (results.Values.Any(r => !r.Accepted && r.Message.StartsWith("auth-required")))
+{
+    var authResults = await client.AuthenticateAllAsync();
+    foreach (var (uri, r) in authResults)
+        Console.WriteLine($"{uri}: AUTH {(r.Accepted ? "OK" : r.Message)}");
+
+    // Retry once authenticated
+    results = await client.PostNoteAsync("hello");
+}
+```
+
+Or check proactively after connecting (some relays AUTH-gate everything,
+not just writes):
+
+```csharp
+// Wait briefly for the relay's AUTH challenge to arrive, then authenticate.
+await Task.Delay(TimeSpan.FromMilliseconds(500));
+await client.AuthenticateAllAsync();
+```
+
+Lower-level: drop down to `RelayClient` for single-relay control. Each
+client exposes `LatestAuthChallenge` (the last challenge received, or
+`null`) and `AuthenticateAsync(key)`. For building the auth event yourself
+(e.g., to sign it on a remote signer), use
+`NostrNet.Auth.Nip42.BuildAuthEvent(key, relayUri, challenge)` — returns
+the signed kind-22242 event ready to wrap in `["AUTH", ...]`.
 
 ---
 

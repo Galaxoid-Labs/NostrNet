@@ -127,6 +127,20 @@ public sealed class NostrClient : IAsyncDisposable
     public IReadOnlyCollection<Uri> Relays => _pool.Uris;
 
     /// <summary>
+    /// Sends a NIP-42 AUTH response on every relay that has issued a
+    /// challenge, using this client's key. Relays without a pending
+    /// challenge are skipped.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
+    public Task<IReadOnlyDictionary<Uri, PublishResult>> AuthenticateAllAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(AuthenticateAllAsync));
+        return _pool.AuthenticateAllAsync(key, cancellationToken);
+    }
+
+    /// <summary>
     /// Publishes a pre-signed event to all relays in the pool. Does not
     /// require this client to have a key — the event is already signed.
     /// </summary>

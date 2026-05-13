@@ -120,6 +120,60 @@ public sealed class RelayPool : IAsyncDisposable
     }
 
     /// <summary>
+    /// Sends a NIP-42 AUTH response on every relay in the pool that has
+    /// received a challenge. Relays without a pending challenge are skipped
+    /// (no entry in the result for them).
+    /// </summary>
+    /// <param name="key">The key used to sign the auth events.</param>
+    /// <param name="cancellationToken">Cancels in-flight AUTHs.</param>
+    /// <returns>Per-relay OK responses for the relays that were authenticated.</returns>
+    public async Task<IReadOnlyDictionary<Uri, PublishResult>> AuthenticateAllAsync(
+        Keys.PrivateKey key,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        EnsureNotDisposed();
+
+        (Uri uri, IRelayClient client)[] toAuth;
+        lock (_clients)
+        {
+            toAuth = _clients
+                .Where(kvp => kvp.Value.LatestAuthChallenge is not null)
+                .Select(kvp => (kvp.Key, kvp.Value))
+                .ToArray();
+        }
+
+        var tasks = new Task<PublishResult>[toAuth.Length];
+        for (int i = 0; i < toAuth.Length; i++)
+        {
+            int captured = i;
+            tasks[i] = SafeAuth(toAuth[captured].client, key, cancellationToken);
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        var results = new Dictionary<Uri, PublishResult>(toAuth.Length);
+        for (int i = 0; i < toAuth.Length; i++)
+        {
+            results[toAuth[i].uri] = tasks[i].Result;
+        }
+
+        return results;
+    }
+
+    private static async Task<PublishResult> SafeAuth(IRelayClient client, Keys.PrivateKey key, CancellationToken ct)
+    {
+        try
+        {
+            return await client.AuthenticateAsync(key, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            return new PublishResult(false, $"auth transport error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Subscribes on every relay in the pool. The returned stream is the union
     /// of all relays' streams, deduplicated by event id. A single
     /// <see cref="SubscriptionEndOfStoredEvents"/> is yielded once every relay

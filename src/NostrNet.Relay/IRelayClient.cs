@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 using NostrNet.Events;
+using NostrNet.Keys;
 
 namespace NostrNet.Relay;
 
@@ -39,4 +40,19 @@ public interface IRelayClient : IAsyncDisposable
 
     /// <summary>Closes a subscription on the relay side.</summary>
     Task CloseAsync(string subscriptionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The most recent NIP-42 <c>AUTH</c> challenge received from this relay,
+    /// or <c>null</c> if none has been sent yet. Replaced if a new challenge
+    /// arrives.
+    /// </summary>
+    string? LatestAuthChallenge { get; }
+
+    /// <summary>
+    /// Signs and sends a NIP-42 auth event using <paramref name="key"/>, then
+    /// awaits the relay's <c>OK</c> response. Uses
+    /// <see cref="LatestAuthChallenge"/> as the challenge.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No AUTH challenge has been received yet.</exception>
+    Task<PublishResult> AuthenticateAsync(PrivateKey key, CancellationToken cancellationToken = default);
 }
