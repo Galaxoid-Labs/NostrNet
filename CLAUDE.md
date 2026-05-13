@@ -217,9 +217,14 @@ they're load-bearing for every NIP that builds or parses events.
 
 - `dotnet restore && dotnet build && dotnet test` from repo root.
 - Sample CLI: `dotnet run --project samples/NostrNet.Sample.Console -- <cmd>`.
-- CI target: GitHub Actions matrix on `windows-latest` / `macos-latest` /
-  `ubuntu-latest` (Mac + Windows are the priority platforms). Not yet
-  wired; deferred until publishing.
+- CI: `.github/workflows/ci.yml` — build + test on
+  `windows-latest` / `macos-latest` / `ubuntu-latest` on every push to main
+  and every PR, plus an AOT-publish smoke test of the sample on Linux.
+- Releases: `.github/workflows/release.yml` — triggered by `v*` tags
+  (e.g. `git tag v0.1.0 && git push --tags`). Packs all four .nupkg files
+  with the version derived from the tag and attaches them to a GitHub
+  release with auto-generated notes. Tags with a `-` (e.g. `v0.1.0-rc1`)
+  are marked pre-release automatically.
 - `Directory.Build.props` (root): TFM, nullable, warnings-as-errors,
   code-style enforcement.
 - `src/Directory.Build.props`: AOT/trim, doc generation, NuGet metadata.

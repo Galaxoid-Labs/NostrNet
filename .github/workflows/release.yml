@@ -1,0 +1,92 @@
+name: Release
+
+# Push a semver tag (e.g. v0.1.0, v0.1.0-rc1) to trigger a release.
+# Produces four .nupkg files and attaches them to a GitHub release with
+# auto-generated notes from the commits since the previous tag.
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.1.0)'
+        required: true
+        type: string
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  release:
+    name: Pack + create release
+    runs-on: ubuntu-latest
+    permissions:
+      # softprops/action-gh-release needs contents:write to create the release.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so generated release notes can diff against previous tag.
+          fetch-depth: 0
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            # GITHUB_REF_NAME is the tag (e.g. v0.1.0); strip the leading "v".
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building NostrNet $VERSION"
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-release-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            nuget-release-
+
+      - name: Restore
+        run: dotnet restore
+
+      # Re-run tests on the tagged commit as a safety net even though CI has
+      # already validated this commit on push to main. Cheap insurance against
+      # tagging the wrong sha.
+      - name: Test
+        run: dotnet test --configuration Release --verbosity normal
+
+      - name: Pack
+        run: |
+          VERSION='${{ steps.version.outputs.version }}'
+          for proj in Core Crypto Relay Client; do
+            dotnet pack "src/NostrNet.$proj" \
+              --configuration Release \
+              --output ./packages \
+              -p:Version="$VERSION" \
+              -p:ContinuousIntegrationBuild=true
+          done
+
+      - name: List built packages
+        run: ls -lh ./packages
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: NostrNet ${{ steps.version.outputs.version }}
+          files: ./packages/*.nupkg
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          # Pre-release flag for tags like v0.1.0-rc1, v0.2.0-beta, etc.
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}

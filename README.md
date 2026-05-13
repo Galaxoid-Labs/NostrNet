@@ -114,6 +114,85 @@ If you're stuck on .NET 8 / 9, NostrNet doesn't currently multi-target —
 you'd need to back-port (mostly C# 14 syntax → C# 12 equivalents and a few
 BCL polyfills).
 
+### Using with Godot
+
+NostrNet works in Godot 4.x C# projects with no special setup. On desktop
+platforms (Windows / macOS / Linux) the integration above (project
+reference or local NuGet feed) applies unchanged.
+
+Things to be aware of:
+
+**TFM.** Godot 4.x defaults to `net8.0`. Bump your project to `net10.0`:
+
+```xml
+<TargetFramework>net10.0</TargetFramework>
+```
+
+This requires Godot 4.5+ — earlier versions pin you to older .NET runtimes.
+
+**Mobile (iOS / Android).** NostrNet is AOT-safe so the library won't break
+Godot's mobile AOT pipeline. If a stripped build throws
+`MissingMethodException`, add NostrNet assemblies to your trim/AOT
+exclusion list.
+
+**Web (HTML5 / WASM).** Browser .NET runtimes have intermittent support for
+`HKDF` and some `System.Security.Cryptography` APIs that NIP-44 / NIP-17
+depend on. Test those specifically on the WASM export before committing —
+NIP-44 will either work fully or fail at the HKDF call.
+
+**Threading.** Godot installs its own `SynchronizationContext` on the main
+thread, so `await` inside `_Ready()` / `_Process()` resumes on the main
+thread — you can touch nodes directly after the await:
+
+```csharp
+using Godot;
+using NostrNet.Client;
+using NostrNet.Keys;
+
+public partial class NostrNode : Node
+{
+    private NostrClient? _client;
+    private PrivateKey? _key;
+
+    public override async void _Ready()
+    {
+        _key = PrivateKey.Generate();
+        _client = await NostrClient.Builder(_key)
+            .UseRelays("wss://relay.damus.io")
+            .ConnectAsync();
+
+        await foreach (var note in _client.SubscribeNotesAsync(limit: 20))
+        {
+            // Back on the main thread — node access is safe.
+            GD.Print($"{note.CreatedAt}: {note.Content}");
+        }
+    }
+
+    public override void _ExitTree()
+    {
+        _key?.Dispose();
+        _client?.DisposeAsync().AsTask().Wait();
+    }
+}
+```
+
+For work started on a background thread (e.g. NIP-13 mining), use
+`CallDeferred` to marshal scene access back to the main thread:
+
+```csharp
+_ = Task.Run(() =>
+{
+    var mined = ProofOfWork.Mine(template, targetDifficulty: 20, ct);
+    var signed = mined.Sign(_key);
+    CallDeferred(MethodName.OnMined, signed.Id.ToHex());
+});
+
+private void OnMined(string idHex) => _label.Text = $"mined: {idHex}";
+```
+
+(Same `CallDeferred` pattern WPF/WinUI uses with `Dispatcher.Invoke`. See
+the "Threading model" section below for the general rules.)
+
 ### Building from source
 
 ```sh
