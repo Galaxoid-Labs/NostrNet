@@ -29,6 +29,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [17](https://github.com/nostr-protocol/nips/blob/master/17.md) | Private direct messages |
 | [19](https://github.com/nostr-protocol/nips/blob/master/19.md) | Bech32 entities (`npub`, `nsec`, `note`, `nprofile`, `nevent`, `naddr`) |
 | [21](https://github.com/nostr-protocol/nips/blob/master/21.md) | `nostr:` URI scheme |
+| [22](https://github.com/nostr-protocol/nips/blob/master/22.md) | Comments (kind 1111) with threaded uppercase/lowercase root and parent tags |
 | [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form markdown articles & drafts (kinds 30023 / 30024) |
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets (mute lists, bookmarks, follow sets, …) with public + NIP-44 self-encrypted private items |
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
@@ -497,6 +498,72 @@ var parsed = Nip21.Parse("nostr:npub1...");
 
 `nsec` is deliberately NOT decoded by `Nip19.Parse` — callers must use
 `PrivateKey.FromNsec` explicitly so secret lifetime stays visible.
+
+---
+
+## NIP-22 comments
+
+Kind 1111 comments for threading on **anything except kind:1 notes** (use
+NIP-10 reply markers for those). Comments can scope to:
+
+- a specific event (e.g. a long-form article)
+- an addressable / parameterized-replaceable event (kind 30000+)
+- an external resource per NIP-73 (URL, hashtag, geohash, …)
+
+The thread structure uses paired tag sets: **uppercase** (`E`/`A`/`I` + `K` + `P`)
+identifies the original target; **lowercase** (`e`/`a`/`i` + `k` + `p`)
+identifies the direct parent. For top-level comments they reference the
+same target.
+
+```csharp
+using NostrNet.Comments;
+
+// Top-level comment on someone's article
+var top = Comment.ReplyTo(articleEvent)
+    .WithContent("nice post!")
+    .Sign(myKey);
+
+// Nested reply — the builder inherits the root scope from the parent comment
+var nested = Comment.ReplyTo(top)
+    .WithContent("agreed")
+    .Mention(otherPubkey)        // adds an extra "p" tag
+    .Quote(someEventId)          // adds a NIP-21 "q" citation
+    .Sign(myKey);
+
+// Comment on an addressable (kind 30023 article) without holding the event
+var byCoord = Comment.Create()
+    .OnAddressable(kind: 30023, author: articleAuthorPub, identifier: "my-slug")
+    .WithContent("found this via search")
+    .Sign(myKey);
+
+// Comment on an external URL (NIP-73)
+var external = Comment.Create()
+    .OnExternal("https://example.com/article", kind: "url")
+    .WithContent("commenting on a blog post")
+    .Sign(myKey);
+
+// Reading
+var parsed = Comment.FromEvent(receivedComment);
+Console.WriteLine(parsed.Content);
+Console.WriteLine(parsed.IsTopLevel ? "(top)" : $"(reply to {parsed.Parent})");
+
+switch (parsed.Root)
+{
+    case EventCommentTarget e:
+        Console.WriteLine($"thread root: event {e.Id}");
+        break;
+    case AddressableCommentTarget a:
+        Console.WriteLine($"thread root: {a.ToCoordinate()}");
+        break;
+    case ExternalCommentTarget x:
+        Console.WriteLine($"thread root: external {x.Identifier} ({x.Kind})");
+        break;
+}
+```
+
+**Important:** `ReplyTo(kind:1 note)` throws — NIP-22 explicitly defers to
+NIP-10 for note threading. `Comment.TryFromEvent(...)` is the non-throwing
+variant.
 
 ---
 

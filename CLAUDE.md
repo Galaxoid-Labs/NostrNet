@@ -54,6 +54,7 @@ warnings fail the build. MIT license, Galaxoid Labs.
 | 17 | private DMs (over NIP-59) | Crypto/Nip17.cs |
 | 19 | bech32 entities (npub/nsec/note/nprofile/nevent/naddr) | Core/Nip19/ |
 | 21 | `nostr:` URI scheme | Core/Nip19/Nip21.cs |
+| 22 | threaded comments (kind 1111; E/A/I + e/a/i tag pairs) | Core/Comments/ |
 | 23 | long-form articles & drafts (30023/30024) | Core/Articles/ |
 | 42 | client-relay AUTH (challenge capture + auth event + send) | Core/Auth/ + Relay |
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
