@@ -29,17 +29,17 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [17](https://github.com/nostr-protocol/nips/blob/master/17.md) | Private direct messages |
 | [19](https://github.com/nostr-protocol/nips/blob/master/19.md) | Bech32 entities (`npub`, `nsec`, `note`, `nprofile`, `nevent`, `naddr`) |
 | [21](https://github.com/nostr-protocol/nips/blob/master/21.md) | `nostr:` URI scheme |
-| [22](https://github.com/nostr-protocol/nips/blob/master/22.md) | Comments (kind 1111) with threaded uppercase/lowercase root and parent tags |
+| [22](https://github.com/nostr-protocol/nips/blob/master/22.md) | Comments (kind 1111) — threaded uppercase/lowercase root + parent tags |
 | [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form markdown articles & drafts (kinds 30023 / 30024) |
-| [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets (mute lists, bookmarks, follow sets, …) with public + NIP-44 self-encrypted private items |
-| [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
-| [B0](https://github.com/nostr-protocol/nips/blob/master/B0.md) | Web bookmarks (kind 39701; parameterized replaceable by URL) |
-| [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | Client-relay AUTH (challenge capture + auth event builder + send/await OK) |
+| [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | Client-relay AUTH — auto-auth + auto-retry on `auth-required` by default |
 | [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | v2 encrypted payloads (ChaCha20 + HMAC-SHA256 + HKDF) |
-| [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap |
+| [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets — public + NIP-44 self-encrypted private items |
+| [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap (used by NIP-17) |
+| [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
+| [B0](https://github.com/nostr-protocol/nips/blob/master/B0.md) | Web bookmarks (kind 39701; parameterized-replaceable by URL) |
 
 Tested against the official BIP-340, BIP-173, RFC 8439, NIP-44, and Galaxoid
-Labs Swift Nostr interop vectors — **300+ tests, zero warnings.**
+Labs Swift Nostr interop vectors — **380+ tests, zero warnings.**
 
 ## Install
 
