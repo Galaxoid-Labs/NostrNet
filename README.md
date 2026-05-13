@@ -32,6 +32,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form markdown articles & drafts (kinds 30023 / 30024) |
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets (mute lists, bookmarks, follow sets, …) with public + NIP-44 self-encrypted private items |
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
+| [B0](https://github.com/nostr-protocol/nips/blob/master/B0.md) | Web bookmarks (kind 39701; parameterized replaceable by URL) |
 | [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | Client-relay AUTH (challenge capture + auth event builder + send/await OK) |
 | [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | v2 encrypted payloads (ChaCha20 + HMAC-SHA256 + HKDF) |
 | [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap |
@@ -542,6 +543,43 @@ Console.WriteLine($"link: nostr:{naddr.Encode()}");
 `Article.TryFromEvent(ev, out var article)` is the non-throwing variant
 for events that may or may not be NIP-23. Articles missing the required
 `d` tag are rejected.
+
+---
+
+## NIP-B0 web bookmarks
+
+Editable per-URL web bookmarks (kind 39701). The bookmark is keyed by its
+URL with the scheme stripped, so the same page over `http://` and
+`https://` collapses to a single addressable bookmark.
+
+```csharp
+using NostrNet.Bookmarks;
+
+// Build & publish
+var ev = WebBookmark.Create("https://alice.blog/marvelous-post")
+    .WithTitle("Alice's marvelous post")
+    .WithDescription("a great insight into nostr lists")
+    .WithHashtags("nostr", "long-form")
+    .WithPublishedAt(DateTimeOffset.UtcNow)
+    .Sign(key);
+
+await client.PublishAsync(ev);
+
+// Parse a received bookmark
+var bm = WebBookmark.FromEvent(receivedEvent);
+Console.WriteLine($"{bm.Title}  ({bm.ToUrl()})");
+Console.WriteLine(bm.Description);
+foreach (var tag in bm.Hashtags) Console.Write($"#{tag} ");
+
+// Share as a nostr:naddr1... URI
+var naddr = bm.ToNaddr(relays: new[] { "wss://relay.example.com" });
+Console.WriteLine($"link: nostr:{naddr.Encode()}");
+```
+
+`Create` strips `https://`, `http://`, or leading `//` from the URL so
+revisions of the same bookmark land at the same `d`-tag value.
+`bookmark.ToUrl()` adds the scheme back (defaults to `https`, or pass
+`"http"` for HTTP-only sources).
 
 ---
 
