@@ -40,7 +40,81 @@ Labs Swift Nostr interop vectors — **300+ tests, zero warnings.**
 
 ## Install
 
-> _Not yet on NuGet._ Build from source:
+> _Not yet on NuGet._ Requires the **.NET 10 SDK**. Two ways to consume it
+> from your own app:
+
+### Option A — Project reference (active development)
+
+Best when you want to step into NostrNet's source from your debugger and
+edit it locally.
+
+```sh
+# 1. Clone NostrNet alongside your app
+git clone <repo> NostrNet
+
+# 2. From your app's solution folder, reference NostrNet.Client
+dotnet add YourApp.csproj reference ../NostrNet/src/NostrNet.Client/NostrNet.Client.csproj
+```
+
+`NostrNet.Client` brings in `NostrNet.Core`, `NostrNet.Crypto`, and
+`NostrNet.Relay` transitively — most apps need only that one reference. Add
+the others (e.g. `NostrNet.Relay` for direct `RelayPool` / NIP-05 use)
+only if you call into them directly.
+
+In Visual Studio / Rider: **Add → Existing Project** for the NostrNet
+csprojs you want in Solution Explorer, then **Add → Project Reference**
+from your app to `NostrNet.Client`.
+
+### Option B — Local NuGet feed (pinned consumption)
+
+Best for CI, multiple consumers, or treating NostrNet as a versioned
+dependency.
+
+```sh
+# 1. Build all four packages into a local folder
+dotnet pack src/NostrNet.Core   -c Release -o ./local-feed
+dotnet pack src/NostrNet.Crypto -c Release -o ./local-feed
+dotnet pack src/NostrNet.Relay  -c Release -o ./local-feed
+dotnet pack src/NostrNet.Client -c Release -o ./local-feed
+```
+
+Add a `nuget.config` at the root of your app's solution (next to the `.sln`):
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+    <add key="NostrNet-Local" value="/abs/path/to/NostrNet/local-feed" />
+  </packageSources>
+</configuration>
+```
+
+Then install like any NuGet package:
+
+```sh
+dotnet add YourApp.csproj package NostrNet.Client --version 1.0.0
+```
+
+Bump `<Version>` in `src/Directory.Build.props` and re-run `dotnet pack`
+when you release a new build; consumers update with `dotnet restore --force`.
+
+### Target framework compatibility
+
+NostrNet targets **`net10.0`**. Your app's TFM must be `net10.0` or higher
+to reference it (`net10.0-windows10.0.19041.0` for WinUI 3 / Windows App
+SDK, plain `net10.0` for console / ASP.NET, `net10.0-android` /
+`net10.0-ios` for MAUI, etc.). Check your app's `.csproj`:
+
+```xml
+<TargetFramework>net10.0</TargetFramework>
+```
+
+If you're stuck on .NET 8 / 9, NostrNet doesn't currently multi-target —
+you'd need to back-port (mostly C# 14 syntax → C# 12 equivalents and a few
+BCL polyfills).
+
+### Building from source
 
 ```sh
 git clone <repo>
@@ -48,8 +122,6 @@ cd NostrNet
 dotnet build
 dotnet test
 ```
-
-Requires the **.NET 10 SDK**.
 
 ## Project layout
 
