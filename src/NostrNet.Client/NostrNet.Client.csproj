@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NostrNet</RootNamespace>
+    <AssemblyName>NostrNet.Client</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NostrNet.Core\NostrNet.Core.csproj" />
+    <ProjectReference Include="..\NostrNet.Crypto\NostrNet.Crypto.csproj" />
+    <ProjectReference Include="..\NostrNet.Relay\NostrNet.Relay.csproj" />
+  </ItemGroup>
+
+</Project>

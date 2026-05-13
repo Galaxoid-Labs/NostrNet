@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NostrNet</RootNamespace>
+    <AssemblyName>NostrNet.Crypto</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NostrNet.Core\NostrNet.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NostrNet.Crypto.Tests" />
+  </ItemGroup>
+
+</Project>

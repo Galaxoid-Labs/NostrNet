@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NostrNet</RootNamespace>
+    <AssemblyName>NostrNet.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NBitcoin.Secp256k1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The internal Secp256k1 wrapper is visible to NostrNet.Crypto so that
+         NIP-44 can call ECDH without exposing curve-library types publicly. -->
+    <InternalsVisibleTo Include="NostrNet.Crypto" />
+    <InternalsVisibleTo Include="NostrNet.Core.Tests" />
+    <InternalsVisibleTo Include="NostrNet.Crypto.Tests" />
+  </ItemGroup>
+
+</Project>

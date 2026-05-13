@@ -1,0 +1,21 @@
+<Project>
+
+  <!--
+    Settings for test projects under tests/. Inherits the repo-level
+    Directory.Build.props at the parent directory.
+
+    Test projects do not require AOT compatibility, missing-doc errors, or
+    NuGet packaging.
+  -->
+
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+
+    <!-- Tests can use whatever they need (e.g. reflection in xUnit). Don't
+         force AOT or trim analysis here. -->
+  </PropertyGroup>
+
+</Project>

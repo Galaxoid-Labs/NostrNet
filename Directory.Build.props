@@ -1,0 +1,27 @@
+<Project>
+
+  <!--
+    Repository-wide build settings. Every csproj under this tree inherits these.
+    Project-type-specific overrides live in src/Directory.Build.props (shippable
+    libraries) and tests/Directory.Build.props (xUnit projects).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Quality gates: warnings are bugs, code style is enforced at build time. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <!-- AnalysisMode defaults to "Recommended" on .NET 10, which is a sensible
+         curated set. Override per-project if a different strictness is needed. -->
+
+    <!-- Deterministic builds for reproducible NuGet packages and CI cache hits. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

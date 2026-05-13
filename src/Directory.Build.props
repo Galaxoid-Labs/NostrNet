@@ -1,0 +1,38 @@
+<Project>
+
+  <!--
+    Settings for shippable libraries under src/. Inherits the repo-level
+    Directory.Build.props at the parent directory.
+
+    These projects are intended for NuGet, so they require:
+      - AOT / trim safety
+      - XML documentation generation (with missing-doc warnings as errors)
+      - Package metadata
+  -->
+
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!-- AOT and trimming: surface incompatibilities at build time. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+
+    <!-- Documentation: every public API requires an XML doc comment.
+         CS1591 is the "missing XML doc" warning; with TreatWarningsAsErrors=true
+         (inherited from the repo root) this fails the build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- NuGet package metadata. -->
+    <IsPackable>true</IsPackable>
+    <Authors>Galaxoid Labs</Authors>
+    <Company>Galaxoid Labs</Company>
+    <Product>NostrNet</Product>
+    <Description>Cross-platform .NET Nostr client library: keys, events, NIP-19, NIP-44 v2, NIP-17 DMs, relay client.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/galaxoidlabs/NostrNet</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>nostr;nip-01;nip-19;nip-44;nip-17;crypto;schnorr;secp256k1</PackageTags>
+  </PropertyGroup>
+
+</Project>
