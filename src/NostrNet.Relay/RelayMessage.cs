@@ -65,7 +65,9 @@ public abstract record RelayMessage
         }
 
         string subId = root[1].GetString() ?? throw new FormatException("EVENT subscription_id is null.");
-        var ev = NostrEvent.FromJson(root[2].GetRawText());
+        // FromJsonElement avoids a GetRawText() string + JsonDocument re-parse
+        // — important because Dispatch runs this for every received event.
+        var ev = NostrEvent.FromJsonElement(root[2]);
         return new EventMessage(subId, ev);
     }
 

@@ -111,13 +111,33 @@ public static class Bech32
     {
         ArgumentNullException.ThrowIfNull(hrp);
         int totalLength = GetEncodedLength(hrp.Length, data.Length);
-        return string.Create(totalLength, (hrp, data: data.ToArray()), static (dest, state) =>
+
+        // Write the bech32 chars to a stack buffer when possible — keeps the
+        // hot path (npub/nsec/note: ~63 chars, naddr: ~150 chars) allocation-
+        // free other than the final string. Larger NIP-19 payloads fall back
+        // to the array pool.
+        char[]? rented = null;
+        Span<char> destination = totalLength <= 256
+            ? stackalloc char[256]
+            : (rented = ArrayPool<char>.Shared.Rent(totalLength));
+
+        try
         {
-            if (!TryEncode(state.hrp, state.data, dest, out int written) || written != dest.Length)
+            destination = destination[..totalLength];
+            if (!TryEncode(hrp, data, destination, out int written) || written != totalLength)
             {
-                throw new ArgumentException("Invalid bech32 input.", nameof(state));
+                throw new ArgumentException("Invalid bech32 input.", nameof(hrp));
             }
-        });
+
+            return destination.ToString();
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<char>.Shared.Return(rented);
+            }
+        }
     }
 
     /// <summary>

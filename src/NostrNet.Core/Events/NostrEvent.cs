@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 
+using System.Buffers;
+using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using NostrNet.Cryptography;
 using NostrNet.Keys;
+using SysEncoding = System.Text.Encoding;
 
 namespace NostrNet.Events;
 
@@ -17,6 +19,13 @@ namespace NostrNet.Events;
 /// </remarks>
 public sealed class NostrEvent
 {
+    private static readonly JsonWriterOptions WriterOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        SkipValidation = true,
+        Indented = false,
+    };
+
     /// <summary>The event id (32-byte SHA-256 of canonical serialization).</summary>
     public required EventId Id { get; init; }
 
@@ -54,114 +63,132 @@ public sealed class NostrEvent
         return Secp256k1.SchnorrVerify(Sig.AsSpan(), Id.AsSpan(), PubKey.AsSpan());
     }
 
-    /// <summary>Parses a relay-wire JSON event.</summary>
+    /// <summary>Parses a relay-wire JSON event from a string.</summary>
     /// <exception cref="FormatException">The JSON is malformed or a field is invalid.</exception>
     public static NostrEvent FromJson(string json)
     {
         ArgumentNullException.ThrowIfNull(json);
-        NostrEventDto? dto;
         try
         {
-            dto = JsonSerializer.Deserialize(json, NostrJsonContext.Default.NostrEventDto);
+            using var doc = JsonDocument.Parse(json);
+            return FromJsonElement(doc.RootElement);
         }
         catch (JsonException ex)
         {
             throw new FormatException("Event JSON is malformed.", ex);
         }
+    }
 
-        if (dto is null)
+    /// <summary>
+    /// Parses an event from an already-parsed <see cref="JsonElement"/>.
+    /// Avoids re-parsing when the caller already holds the element (e.g., when
+    /// relay message parsing has the wider envelope).
+    /// </summary>
+    /// <exception cref="FormatException">The element is not a valid event object.</exception>
+    public static NostrEvent FromJsonElement(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
         {
-            throw new FormatException("Event JSON is null.");
+            throw new FormatException("Event must be a JSON object.");
         }
 
-        return FromDto(dto);
+        string id = GetRequiredString(element, "id");
+        string pubkey = GetRequiredString(element, "pubkey");
+        long createdAt = element.GetProperty("created_at").GetInt64();
+        int kind = element.GetProperty("kind").GetInt32();
+        string content = GetRequiredString(element, "content");
+        string sig = GetRequiredString(element, "sig");
+
+        if (!element.TryGetProperty("tags", out var tagsEl) || tagsEl.ValueKind != JsonValueKind.Array)
+        {
+            throw new FormatException("Event is missing tags array.");
+        }
+
+        int tagCount = tagsEl.GetArrayLength();
+        var tags = new IReadOnlyList<string>[tagCount];
+        int i = 0;
+        foreach (var rowEl in tagsEl.EnumerateArray())
+        {
+            if (rowEl.ValueKind != JsonValueKind.Array)
+            {
+                throw new FormatException("Each tag must be a JSON array.");
+            }
+
+            var row = new string[rowEl.GetArrayLength()];
+            int j = 0;
+            foreach (var cellEl in rowEl.EnumerateArray())
+            {
+                row[j++] = cellEl.GetString() ?? string.Empty;
+            }
+
+            tags[i++] = row;
+        }
+
+        return new NostrEvent
+        {
+            Id = EventId.FromHex(id),
+            PubKey = PublicKey.FromHex(pubkey),
+            CreatedAt = createdAt,
+            Kind = kind,
+            Tags = tags,
+            Content = content,
+            Sig = Signature.FromHex(sig),
+        };
     }
 
     /// <summary>Serializes this event into NIP-01 wire JSON.</summary>
     public string ToJson()
     {
-        var dto = new NostrEventDto
+        var buffer = new ArrayBufferWriter<byte>(initialCapacity: 512);
+        using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
         {
-            id = Id.ToHex(),
-            pubkey = PubKey.ToHex(),
-            created_at = CreatedAt,
-            kind = Kind,
-            tags = MaterializeTags(Tags),
-            content = Content,
-            sig = Sig.ToHex(),
-        };
-
-        return JsonSerializer.Serialize(dto, NostrJsonContext.Default.NostrEventDto);
-    }
-
-    private static NostrEvent FromDto(NostrEventDto dto)
-    {
-        if (dto.id is null || dto.pubkey is null || dto.content is null || dto.sig is null || dto.tags is null)
-        {
-            throw new FormatException("Event JSON is missing required fields.");
+            WriteTo(writer);
         }
 
-        return new NostrEvent
-        {
-            Id = EventId.FromHex(dto.id),
-            PubKey = PublicKey.FromHex(dto.pubkey),
-            CreatedAt = dto.created_at,
-            Kind = dto.kind,
-            Tags = MaterializeTagsImmutable(dto.tags),
-            Content = dto.content,
-            Sig = Signature.FromHex(dto.sig),
-        };
+        return SysEncoding.UTF8.GetString(buffer.WrittenSpan);
     }
 
-    private static string[][] MaterializeTags(IReadOnlyList<IReadOnlyList<string>> tags)
+    /// <summary>
+    /// Writes the full event JSON object directly to a
+    /// <see cref="Utf8JsonWriter"/>. Used by the relay-protocol builder to
+    /// avoid a string round-trip when embedding the event in an <c>EVENT</c>
+    /// or <c>AUTH</c> envelope.
+    /// </summary>
+    internal void WriteTo(Utf8JsonWriter writer)
     {
-        var result = new string[tags.Count][];
-        for (int i = 0; i < tags.Count; i++)
+        writer.WriteStartObject();
+        writer.WriteString("id", Id.ToHex());
+        writer.WriteString("pubkey", PubKey.ToHex());
+        writer.WriteNumber("created_at", CreatedAt);
+        writer.WriteNumber("kind", Kind);
+
+        writer.WriteStartArray("tags");
+        for (int i = 0; i < Tags.Count; i++)
         {
-            var row = tags[i];
-            var arr = new string[row.Count];
-            for (int j = 0; j < row.Count; j++)
+            var tag = Tags[i];
+            writer.WriteStartArray();
+            for (int j = 0; j < tag.Count; j++)
             {
-                arr[j] = row[j];
+                writer.WriteStringValue(tag[j]);
             }
 
-            result[i] = arr;
+            writer.WriteEndArray();
         }
 
-        return result;
+        writer.WriteEndArray();
+
+        writer.WriteString("content", Content);
+        writer.WriteString("sig", Sig.ToHex());
+        writer.WriteEndObject();
     }
 
-    private static IReadOnlyList<IReadOnlyList<string>> MaterializeTagsImmutable(string[][] tags)
+    private static string GetRequiredString(JsonElement element, string propertyName)
     {
-        var rows = new IReadOnlyList<string>[tags.Length];
-        for (int i = 0; i < tags.Length; i++)
+        if (!element.TryGetProperty(propertyName, out var prop) || prop.ValueKind != JsonValueKind.String)
         {
-            rows[i] = tags[i];
+            throw new FormatException($"Event is missing '{propertyName}'.");
         }
 
-        return rows;
+        return prop.GetString() ?? throw new FormatException($"Event '{propertyName}' is null.");
     }
-}
-
-// DTO used solely for STJ source-generated (de)serialization. Field names match
-// the NIP-01 wire format exactly (lower_snake_case where applicable).
-internal sealed class NostrEventDto
-{
-#pragma warning disable IDE1006 // naming styles — wire format requires these names
-    public string? id { get; set; }
-    public string? pubkey { get; set; }
-    public long created_at { get; set; }
-    public int kind { get; set; }
-    public string[][]? tags { get; set; }
-    public string? content { get; set; }
-    public string? sig { get; set; }
-#pragma warning restore IDE1006
-}
-
-[JsonSerializable(typeof(NostrEventDto))]
-[JsonSourceGenerationOptions(
-    GenerationMode = JsonSourceGenerationMode.Default,
-    PropertyNamingPolicy = JsonKnownNamingPolicy.Unspecified)]
-internal partial class NostrJsonContext : JsonSerializerContext
-{
 }

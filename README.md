@@ -29,6 +29,8 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [17](https://github.com/nostr-protocol/nips/blob/master/17.md) | Private direct messages |
 | [19](https://github.com/nostr-protocol/nips/blob/master/19.md) | Bech32 entities (`npub`, `nsec`, `note`, `nprofile`, `nevent`, `naddr`) |
 | [21](https://github.com/nostr-protocol/nips/blob/master/21.md) | `nostr:` URI scheme |
+| [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form markdown articles & drafts (kinds 30023 / 30024) |
+| [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets (mute lists, bookmarks, follow sets, …) with public + NIP-44 self-encrypted private items |
 | [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | AUTH (challenge parsed; client-side helper pending) |
 | [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | v2 encrypted payloads (ChaCha20 + HMAC-SHA256 + HKDF) |
 | [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap |
@@ -54,7 +56,7 @@ Requires the **.NET 10 SDK**.
 | Package | Responsibility |
 |---------|---------------|
 | `NostrNet.Core`   | Keys, events, canonical serialization, NIP-19 bech32, `Profile`, internal secp256k1 wrapper |
-| `NostrNet.Crypto` | ChaCha20, NIP-44 v2, NIP-17/59 gift wrap |
+| `NostrNet.Crypto` | ChaCha20, NIP-44 v2, NIP-17/59 gift wrap, NIP-51 lists |
 | `NostrNet.Relay`  | WebSocket client, `RelayPool`, `Filter`, NIP-11 fetch, NIP-05 verify |
 | `NostrNet.Client` | High-level `NostrClient` façade |
 
@@ -99,6 +101,14 @@ var results = await client.PostNoteAsync("hello nostr");
 foreach (var (uri, result) in results)
     Console.WriteLine($"{uri}: {(result.Accepted ? "OK" : "REJECTED")} {result.Message}");
 ```
+
+**Incoming events are verified automatically.** `RelayClient` checks the
+event id (SHA-256 of canonical serialization) and the Schnorr signature
+on every event it receives from a relay; events that fail either check
+are silently dropped before they reach a subscriber. You don't need to
+call `.Verify()` on events yielded from `SubscribeAsync`. (Events parsed
+manually from JSON via `NostrEvent.FromJson` are not verified — call
+`.Verify()` yourself in that case.)
 
 ### Subscribe to events
 
@@ -179,6 +189,58 @@ var parsed = NostrEvent.FromJson(json);
 
 ---
 
+## Working with tags
+
+Build tags with the `Tag` factory and query them with extensions on the
+event's tag list:
+
+```csharp
+using NostrNet.Events;
+
+// Building
+var note = new UnsignedEvent
+{
+    PubKey = key.PublicKey,
+    CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+    Kind = 1,
+    Tags = new[]
+    {
+        Tag.P(recipient),                          // ["p", "<hex>"]
+        Tag.E(parentId, "wss://relay.example.com", "reply"),  // NIP-10 reply marker
+        Tag.T("nostr"),
+        Tag.A(30023, articleAuthor, "my-slug"),    // addressable coordinate
+    },
+    Content = "...",
+}.Sign(key);
+
+// Querying
+foreach (var p in ev.Tags.Pubkeys())              // every "p" tag as PublicKey
+    Console.WriteLine(p.ToNpub());
+
+foreach (var id in ev.Tags.EventIds())            // every "e" tag as EventId
+    Console.WriteLine(id.ToHex());
+
+string? articleSlug = ev.Tags.Identifier();        // the "d" tag's value
+string? title = ev.Tags.FirstValue("title");
+IEnumerable<string> hashtags = ev.Tags.Hashtags();
+IEnumerable<string> mentioned = ev.Tags.AllValues("p");
+bool hasReply = ev.Tags.Has("e");
+
+// Drop down to raw rows when you need the third/fourth column (relay, marker):
+foreach (var eTag in ev.Tags.Named("e"))
+{
+    var id = eTag[1];
+    var relay = eTag.Count > 2 ? eTag[2] : null;
+    var marker = eTag.Count > 3 ? eTag[3] : null;
+}
+```
+
+The `Tag.*` factories never produce a tag with the wrong shape; the query
+extensions silently skip malformed rows so you never need defensive
+length-checking on the happy path.
+
+---
+
 ## NIP-19 bech32 entities
 
 ```csharp
@@ -223,6 +285,105 @@ var parsed = Nip21.Parse("nostr:npub1...");
 
 `nsec` is deliberately NOT decoded by `Nip19.Parse` — callers must use
 `PrivateKey.FromNsec` explicitly so secret lifetime stays visible.
+
+---
+
+## NIP-23 long-form articles
+
+Markdown articles (kind 30023) and drafts (kind 30024). Both are
+parameterized-replaceable, keyed by a stable `d`-tag identifier (slug) —
+republishing with the same slug replaces the previous version.
+
+```csharp
+using NostrNet.Articles;
+
+// Build & publish
+var ev = Article.Create("my-first-article", File.ReadAllText("post.md"))
+    .WithTitle("My First Article")
+    .WithSummary("An introduction to my new blog")
+    .WithImage("https://example.com/cover.png")
+    .WithPublishedAt(DateTimeOffset.UtcNow)
+    .WithHashtags("intro", "nostr")
+    .Sign(authorKey);
+
+await client.PublishAsync(ev);
+
+// As a draft (kind 30024) — same shape, different kind
+var draft = Article.Create("my-first-article", workInProgress)
+    .AsDraft()
+    .Sign(authorKey);
+
+// Read a received article event
+var article = Article.FromEvent(receivedEvent);
+Console.WriteLine($"{article.Title} by {article.Author.ToNpub()}");
+Console.WriteLine(article.Markdown);
+
+if (article.PublishedAt is DateTimeOffset pub)
+    Console.WriteLine($"originally published {pub}");
+else
+    Console.WriteLine($"created {article.CreatedAt}");
+
+// Share via a nostr:naddr1… URI
+var naddr = article.ToNaddr(relays: new[] { "wss://relay.example.com" });
+Console.WriteLine($"link: nostr:{naddr.Encode()}");
+```
+
+`Article.TryFromEvent(ev, out var article)` is the non-throwing variant
+for events that may or may not be NIP-23. Articles missing the required
+`d` tag are rejected.
+
+---
+
+## NIP-51 lists
+
+Build mute lists, bookmarks, pinned notes, follow sets, etc. — with both
+public items (in tags) and private items (NIP-44 self-encrypted in the
+event's `content`).
+
+```csharp
+using NostrNet.Lists;
+
+// Mute list (replaceable, one per author)
+var muteEvent = NostrList.Create(Nip51Kinds.MuteList)
+    .AddPubkey(spammer)                       // public — anyone can see
+    .AddHashtag("crypto-scam")                // public
+    .AddPrivatePubkey(secretBlock)            // encrypted in content
+    .AddPrivateWord("personal-trigger-word")  // encrypted in content
+    .Sign(key);
+
+await client.PublishAsync(muteEvent);
+
+// Parameterized set (multiple per author, distinguished by identifier)
+var friends = NostrList.Create(Nip51Kinds.FollowSets, identifier: "close-friends")
+    .WithTitle("Close Friends")
+    .WithDescription("people I actually talk to")
+    .WithImage("https://example.com/friends.png")
+    .AddPubkey(alicePub)
+    .AddPubkey(bobPub)
+    .Sign(key);
+
+// Reading
+var list = NostrList.FromEvent(receivedEvent);          // public items only
+var fullList = NostrList.FromEvent(receivedEvent, key); // public + decrypted private
+
+foreach (var muted in fullList.Pubkeys)  Console.WriteLine(muted.ToNpub());
+foreach (var tag in fullList.Hashtags)   Console.WriteLine($"#{tag}");
+foreach (var word in fullList.Words)     Console.WriteLine($"muted word: {word}");
+
+if (list.HasEncryptedContent && !fullList.PrivateItems.Any())
+    Console.WriteLine("(legacy NIP-04 encrypted content — not yet supported)");
+```
+
+`Nip51Kinds` exposes constants for every documented kind (`MuteList`,
+`PinnedNotes`, `Bookmarks`, `Communities`, `Interests`, `DmRelays`,
+`GoodWikiAuthors`, `FollowSets`, `RelaySets`, `BookmarkSets`,
+`ArticleCurationSets`, `KindMuteSets`, `EmojiSets`, `StarterPacks`, …).
+Parameterized-set kinds (≥ 30000) require an identifier;
+`Nip51Kinds.IsParameterizedSet(kind)` checks the range.
+
+Encryption uses **NIP-44 self-encryption** (modern, what current clients
+write). Lists encrypted by older NIP-04 clients leave `PrivateItems` empty;
+public items remain readable. NIP-04 backward-decoding is on the roadmap.
 
 ---
 
@@ -396,6 +557,146 @@ dotnet run --project samples/NostrNet.Sample.Console -- verify npub1... bob@exam
 ```
 
 ---
+
+## Threading model
+
+All I/O is async; the library never blocks the calling thread on a network
+operation. `RelayClient` runs its send and receive loops on the thread pool
+internally, so WebSocket traffic doesn't share a thread with your UI or
+request handler.
+
+### Async I/O is safe from any thread
+
+`PublishAsync`, `SubscribeAsync`, `Nip05.VerifyAsync`,
+`RelayInformation.FetchAsync`, and friends are all properly async — await
+them from anywhere. Continuations marshal back to the caller's
+`SynchronizationContext` by default, so on a UI thread you can touch UI
+state directly after the await.
+
+```csharp
+private async void PostButton_Click(object sender, EventArgs e)
+{
+    var results = await client.PostNoteAsync(textBox.Text);
+    statusLabel.Text = results.Values.Any(r => r.Accepted) ? "Posted" : "Rejected";
+}
+```
+
+For pure background work (worker services, console apps), add
+`.ConfigureAwait(false)` to keep continuations on the thread pool.
+
+### Subscriptions: `await foreach` doesn't block the thread, but does park the method
+
+`SubscribeAsync` returns `IAsyncEnumerable<NostrEvent>` and yields events as
+they arrive. **The UI thread stays responsive during a subscription** (the
+message pump keeps running between awaits), but **any code after the
+`await foreach` won't run until the subscription ends** — when the relay
+closes it, your `CancellationToken` fires, or the stream completes
+naturally.
+
+```csharp
+// Code after the loop is parked until the subscription ends.
+async Task RunFeedAsync(CancellationToken ct)
+{
+    await foreach (var note in client.SubscribeNotesAsync(authors: [pub], cancellationToken: ct))
+        feedListBox.Items.Add(note.Content);
+    
+    statusLabel.Text = "Subscription closed";   // runs only after the loop ends
+}
+```
+
+If you want other work to proceed *while* the subscription runs, fire it on
+a separate task:
+
+```csharp
+private void Start_Click(object sender, EventArgs e)
+{
+    _ = ConsumeFeedAsync(_appCts.Token);   // fire-and-forget
+    statusLabel.Text = "Listening...";     // runs immediately
+}
+
+private async Task ConsumeFeedAsync(CancellationToken ct)
+{
+    try
+    {
+        await foreach (var note in client.SubscribeNotesAsync(authors: [pub], cancellationToken: ct))
+            feedListBox.Items.Add(note.Content);
+    }
+    catch (OperationCanceledException) { /* clean shutdown */ }
+}
+```
+
+For multi-consumer or producer/consumer scenarios, decouple via a
+`Channel<T>`:
+
+```csharp
+var feed = Channel.CreateUnbounded<NostrEvent>();
+
+_ = Task.Run(async () =>
+{
+    await foreach (var ev in client.SubscribeAsync(filters, ct).ConfigureAwait(false))
+        await feed.Writer.WriteAsync(ev, ct).ConfigureAwait(false);
+}, ct);
+
+// One or more consumers, possibly on different threads
+await foreach (var ev in feed.Reader.ReadAllAsync(ct))
+    ProcessEvent(ev);
+```
+
+### CPU-bound work: wrap in `Task.Run`
+
+`ProofOfWork.Mine` is synchronous and CPU-bound — it will block the calling
+thread until it finds a satisfying nonce. Wrap it in `Task.Run` for UI apps
+or anywhere blocking is unacceptable:
+
+```csharp
+using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+NostrEvent signed = await Task.Run(() =>
+{
+    var mined = ProofOfWork.Mine(template, targetDifficulty: 20, cts.Token);
+    return mined.Sign(key);
+}, cts.Token);
+
+await client.PublishAsync(signed);
+```
+
+The library deliberately ships only the synchronous `Mine` — wrapping it in
+a `MineAsync` would just be `Task.Run(() => Mine(...))`, which the caller
+can do better themselves (they know their threading model). See [Stephen
+Toub on async wrappers over sync methods](https://devblogs.microsoft.com/pfxteam/should-i-expose-asynchronous-wrappers-for-synchronous-methods/).
+
+NIP-44 encrypt/decrypt is synchronous too but typically fast (microseconds
+for small messages); only wrap in `Task.Run` if you're encrypting maximum-size
+payloads (64 KiB) on a UI thread and care about smoothness.
+
+### Concurrent operations on a single client are safe
+
+You can have many concurrent subscriptions and in-flight publishes on the
+same `RelayClient` or `RelayPool`. Internal state uses `ConcurrentDictionary`
+and the send queue is an `UnboundedChannel<string>` configured for multiple
+writers. The same `NostrClient` instance is shared across your app — don't
+create one per call.
+
+### Cancellation
+
+Every async method takes a `CancellationToken`. Wire one app-scoped
+`CancellationTokenSource` to your shutdown signal and pass it everywhere:
+
+```csharp
+using var appCts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { appCts.Cancel(); e.Cancel = true; };
+
+await using var client = await NostrClient.Builder(key)
+    .UseRelays("wss://relay.damus.io")
+    .ConnectAsync(appCts.Token);
+
+// ... run subscriptions / publishes / mining with appCts.Token ...
+```
+
+`await using var client` ensures the receive/send loops are torn down and
+the WebSocket is closed cleanly. Pending publishes fail with
+`OperationCanceledException`; subscription enumerators complete; `Mine`
+throws on its next iteration check.
 
 ## Design notes
 

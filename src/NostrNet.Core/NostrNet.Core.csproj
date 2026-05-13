@@ -13,6 +13,7 @@
     <!-- The internal Secp256k1 wrapper is visible to NostrNet.Crypto so that
          NIP-44 can call ECDH without exposing curve-library types publicly. -->
     <InternalsVisibleTo Include="NostrNet.Crypto" />
+    <InternalsVisibleTo Include="NostrNet.Relay" />
     <InternalsVisibleTo Include="NostrNet.Core.Tests" />
     <InternalsVisibleTo Include="NostrNet.Crypto.Tests" />
   </ItemGroup>

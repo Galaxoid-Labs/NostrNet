@@ -62,8 +62,10 @@ library; AOT/trim warnings fail the build.
 | 17 | private DMs (over NIP-59) | Crypto/Nip17.cs |
 | 19 | bech32 entities (`npub`, `nsec`, `note`, `nprofile`, `nevent`, `naddr`) | Core/Nip19/ |
 | 21 | `nostr:` URI scheme | Core/Nip19/Nip21.cs |
+| 23 | long-form articles & drafts (kinds 30023/30024) | Core/Articles/ |
 | 42 | AUTH messages parsed; client-side helper not yet exposed | Relay (parser only) |
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
+| 51 | lists & sets (public + NIP-44 self-encrypted private items) | Crypto/Lists/ |
 | 59 | gift wrap (used by NIP-17) | Crypto/Nip17.cs |
 
 **Not implemented (deferred):** NIP-02 (contact list helpers), NIP-07/46/65,
@@ -85,6 +87,74 @@ threading helpers. Adding them is mechanical given the building blocks.
 **When adding new code that interacts with a NIP, find an interop vector
 before writing the impl.** Tests must pass against external implementations,
 not just round-trip their own output.
+
+## Security guarantees
+
+- **Incoming events are verified automatically.** `RelayClient.Dispatch`
+  calls `ev.Event.Verify()` on every `EventMessage` before writing it to a
+  subscription channel. Events with a bad id or bad signature are silently
+  dropped. Callers consuming `SubscribeAsync` (directly or via `NostrClient`
+  / `RelayPool` / `Nip17.Unwrap` / etc.) can trust events without rechecking.
+  Events parsed manually from JSON via `NostrEvent.FromJson` are NOT verified
+  automatically — that's a deliberate split (the parser shouldn't refuse to
+  return malformed data the caller might want to inspect).
+- **NIP-17 unwrap re-verifies the inner seal.** Even after the outer gift
+  wrap is verified by the receive loop, the seal's signature and the
+  rumor's pubkey-equals-seal-author check both happen inside
+  `Nip17.Unwrap`. So the verified `Sender` cannot be spoofed by a malicious
+  gift-wrap signer.
+- **NIP-05 verification is fail-closed.** Any decode/HTTP/parse error
+  results in `IsVerified=false` with a `FailureReason`. No exception leaks
+  for normal "doesn't verify" paths.
+
+## Performance notes (per-event hot path)
+
+The receive → verify → dispatch path is where almost all CPU time goes on a
+busy feed. Specific decisions worth knowing before changing this code:
+
+- **`EventSerializer.ComputeId`** writes canonical JSON straight into an
+  `ArrayBufferWriter<byte>` and hashes its `WrittenSpan` — no
+  `MemoryStream.ToArray()` copy. Pubkey hex is emitted via a stack-allocated
+  64-byte ASCII buffer using a `HexAscii` lookup table; never allocates a
+  `string`.
+- **`NostrEvent.FromJsonElement(JsonElement)`** parses events directly from
+  an already-decoded `JsonElement`. `RelayMessage.ParseEvent` uses this
+  overload, so the receive loop avoids the old `GetRawText()` → re-parse
+  round-trip. `FromJson(string)` exists for callers parsing from text.
+- **`NostrEvent.WriteTo(Utf8JsonWriter)`** (internal) writes the wire form
+  straight into a caller's writer. `RelayProtocol.BuildEventLikeMessage`
+  uses this to embed an event in the `["EVENT", ev]` envelope without going
+  through `ToJson()` → `JsonDocument.Parse` → `WriteTo`. Needs
+  `[InternalsVisibleTo("NostrNet.Relay")]` on Core (already set).
+- **`RelayClient.ReceiveLoopAsync`** uses an `ArrayPool<byte>`-rented frame
+  buffer and an `ArrayBufferWriter<byte>` for assembling multi-frame
+  messages. The loop never converts to `string` — `JsonDocument.Parse` is
+  called on the raw bytes. Call `pending.ResetWrittenCount()` after each
+  message (not `Clear`, which would re-zero the buffer).
+- **`Bech32.Encode`** writes into a stack-allocated `char[256]` for typical
+  NIP-19 outputs (npub/nsec/note/most nprofile/nevent) and falls back to
+  `ArrayPool<char>` only for very large `naddr`. Skips the `data.ToArray()`
+  copy that the old `string.Create` path required.
+- **`Nip44.EncryptInternal` / `DecryptInternal`** use `stackalloc` for ≤4KB
+  buffers and `ArrayPool<byte>` for larger; sensitive intermediates
+  (conversation key, private key bytes, ECDH shared x) are zeroed in
+  `finally` blocks via `CryptographicOperations.ZeroMemory`.
+
+**Things deliberately not optimized** (cold or amortized):
+
+- `Tag.P/E/T/...` allocate a fresh `string[]` per call. Two-element arrays;
+  call sites are once per tag, not per byte.
+- `Filter.ToJson`, `RelayProtocol.BuildSubscribeMessage`,
+  `NostrList.SerializeTagArray`, `Nip17.SerializeRumor` still use
+  `MemoryStream` + `ToArray`. They run once per subscription / publish /
+  send — WebSocket send latency dominates.
+- `TagExtensions.Named/AllValues/Pubkeys/EventIds` use `yield return`
+  iterators. Allocating an enumerator per query is fine for the typical
+  one-shot usage pattern; if you find yourself calling them in a tight loop
+  per event, materialize once with `.ToList()`.
+
+If you change `ComputeId` or `FromJsonElement`, run the full test suite —
+they're load-bearing for every NIP that builds or parses events.
 
 ## Gotchas / footguns
 

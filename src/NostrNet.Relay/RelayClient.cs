@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
-using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using NostrNet.Events;
 using SysEncoding = System.Text.Encoding;
@@ -277,15 +278,18 @@ public sealed class RelayClient : IRelayClient
 
     private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
     {
-        var buffer = new byte[64 * 1024];
-        var pending = new StringBuilder();
+        // Per-frame receive buffer (pooled). Working in bytes throughout
+        // avoids two UTF-8 round-trips per frame; the assembled message is
+        // parsed by JsonDocument directly from the underlying bytes.
+        byte[] receiveBuffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        var pending = new ArrayBufferWriter<byte>(initialCapacity: 64 * 1024);
 
         try
         {
             while (!cancellationToken.IsCancellationRequested
                 && _webSocket.State == WebSocketState.Open)
             {
-                var result = await _webSocket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
+                var result = await _webSocket.ReceiveAsync(receiveBuffer, cancellationToken).ConfigureAwait(false);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     break;
@@ -296,23 +300,25 @@ public sealed class RelayClient : IRelayClient
                     continue;
                 }
 
-                pending.Append(SysEncoding.UTF8.GetString(buffer, 0, result.Count));
+                pending.Write(receiveBuffer.AsSpan(0, result.Count));
                 if (!result.EndOfMessage)
                 {
                     continue;
                 }
 
-                string json = pending.ToString();
-                pending.Clear();
-
                 RelayMessage? message = null;
                 try
                 {
-                    message = RelayMessage.Parse(json);
+                    using var doc = JsonDocument.Parse(pending.WrittenMemory);
+                    message = RelayMessage.Parse(doc.RootElement);
                 }
-                catch (FormatException)
+                catch (Exception ex) when (ex is JsonException or FormatException)
                 {
                     // Malformed message — ignore and keep reading.
+                }
+                finally
+                {
+                    pending.ResetWrittenCount();
                 }
 
                 if (message is not null)
@@ -331,6 +337,8 @@ public sealed class RelayClient : IRelayClient
         }
         finally
         {
+            ArrayPool<byte>.Shared.Return(receiveBuffer);
+
             // Connection is over. Tell every pending subscriber.
             foreach (var sub in _subscriptions)
             {
@@ -350,6 +358,15 @@ public sealed class RelayClient : IRelayClient
         switch (message)
         {
             case EventMessage ev:
+                // Verify id + signature before surfacing. A malicious or
+                // misbehaving relay could otherwise inject bogus events into
+                // a subscription. Invalid events are dropped silently — the
+                // receive loop continues reading the next message.
+                if (!ev.Event.Verify())
+                {
+                    break;
+                }
+
                 if (_subscriptions.TryGetValue(ev.SubscriptionId, out var subEv))
                 {
                     subEv.Writer.TryWrite(new SubscriptionEventReceived(ev.Event));

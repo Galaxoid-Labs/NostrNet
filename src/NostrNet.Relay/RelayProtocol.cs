@@ -83,20 +83,18 @@ internal static class RelayProtocol
 
     private static string BuildEventLikeMessage(string tag, NostrEvent ev)
     {
-        using var ms = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(ms, WriterOptions))
+        // Use the package-internal NostrEvent.WriteTo so we don't round-trip
+        // through ToJson → JsonDocument.Parse → WriteTo (which allocated a
+        // string and parsed a DOM on every publish).
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>(initialCapacity: 512);
+        using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
         {
             writer.WriteStartArray();
             writer.WriteStringValue(tag);
-
-            // Re-serialize the event through its own JSON path to keep field
-            // ordering and escaping consistent with the canonical form.
-            using var doc = JsonDocument.Parse(ev.ToJson());
-            doc.RootElement.WriteTo(writer);
-
+            ev.WriteTo(writer);
             writer.WriteEndArray();
         }
 
-        return SysEncoding.UTF8.GetString(ms.ToArray());
+        return SysEncoding.UTF8.GetString(buffer.WrittenSpan);
     }
 }
