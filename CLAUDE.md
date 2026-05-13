@@ -1,231 +1,155 @@
 # NostrNet — Maintainer Notes
 
-A cross-platform .NET 10 Nostr library. This file is the working brief for
-Claude/AI assistants modifying the codebase. User-facing docs live in
-`README.md`.
+Cross-platform .NET 10 Nostr library. This file is for AI assistants /
+maintainers; user-facing docs live in `README.md`.
 
-## Architecture at a glance
+## Architecture
 
 ```
-NostrNet.sln
-├── src/
-│   ├── NostrNet.Core/      Keys, events, NIP-01 canonical serialization,
-│   │                       NIP-19 (bech32 entities), Profile (kind-0),
-│   │                       internal Secp256k1 wrapper. No I/O.
-│   ├── NostrNet.Crypto/    ChaCha20 (RFC 8439), NIP-44 v2, NIP-17/59 gift wrap.
-│   │                       Depends on Core's internal Secp256k1 via InternalsVisibleTo.
-│   ├── NostrNet.Relay/     WebSocket relay client, RelayPool, Filter, NIP-11,
-│   │                       NIP-05 (HTTPS-based identifier verification).
-│   └── NostrNet.Client/    NostrClient façade — combines key + RelayPool +
-│                           ergonomic helpers.
-├── tests/
-│   └── *.Tests/            xUnit; vectors embedded as resources where applicable.
-└── samples/
-    └── NostrNet.Sample.Console/   CLI: gen, post, dm, feed, mine, info, verify.
+src/
+  NostrNet.Core/      Keys, events, NIP-01 canonical id, NIP-19 bech32,
+                      Profile (kind 0), Articles (NIP-23), internal Secp256k1
+                      wrapper. No I/O.
+  NostrNet.Crypto/    ChaCha20 (RFC 8439), NIP-44 v2, NIP-17/59 gift wrap,
+                      NIP-51 lists. Uses Core's internal Secp256k1.
+  NostrNet.Relay/     ClientWebSocket-based RelayClient, RelayPool, Filter,
+                      RelayInformation (NIP-11), Nip05.
+  NostrNet.Client/    NostrClient façade — RelayPool + optional key + helpers.
+tests/                xUnit; vectors as embedded resources where applicable.
+samples/              CLI: gen post dm feed mine info verify.
 ```
 
-Single TFM (`net10.0`). Central Package Management via `Directory.Packages.props`.
-`<IsAotCompatible>true</IsAotCompatible>` is enforced on every shippable
-library; AOT/trim warnings fail the build.
+Single TFM `net10.0`. Central Package Management.
+`<IsAotCompatible>true</IsAotCompatible>` on every shippable lib; AOT/trim
+warnings fail the build. MIT license, Galaxoid Labs.
 
 ## Locked-in decisions
 
-1. **Internal first, NuGet later.** Public surface is intentionally tight.
-   Most helpers are `internal` with `InternalsVisibleTo` to sibling projects
-   and test projects.
+1. **Internal first.** Most non-essential public surface is `internal` +
+   `[InternalsVisibleTo]` to siblings.
 2. **secp256k1 is `NBitcoin.Secp256k1`**, wrapped behind a single internal
-   `Secp256k1` static class in `NostrNet.Core/Secp256k1/`. Swapping to
-   libsecp256k1 P/Invoke later means rewriting that one file. **Do not
-   leak the curve library type out of that file.**
-3. **AOT-compatible.** All JSON goes through STJ source generators
-   (`JsonSerializerContext` partials). No reflection-based serialization
-   anywhere in shippable code.
-4. **No `IServiceCollection.AddNostr`**, no `ILogger` dep. Optional
-   `ILogger` injected via ctor parameter only if warranted (currently
-   nothing logs).
-5. **Span-based crypto.** Every crypto API takes/returns `ReadOnlySpan<byte>`/`Span<byte>`.
-   `PrivateKey` zeros memory on `Dispose` (via `CryptographicOperations.ZeroMemory`).
-6. **No `Result<T, E>`.** Exceptions for malformed-input / unreachable cases,
-   `Try*` variants for parsing untrusted input, bool/nullable for normal
-   protocol outcomes (relay rejection, signature-verify result, etc.).
-7. **MIT license.** Copyright Galaxoid Labs.
+   `Secp256k1` static class in `NostrNet.Core/Secp256k1/`. **Do not leak the
+   curve library type out of that file.** Swapping backends = rewriting one
+   file.
+3. **AOT-compatible.** All JSON via STJ source generators or hand-rolled
+   `JsonElement`/`Utf8JsonWriter`. No reflection-based serialization.
+4. **No DI / no logger dep.** No `IServiceCollection.AddNostr`, no
+   `Microsoft.Extensions.Logging` reference.
+5. **Span-based crypto, memory hygiene.** `PrivateKey.Dispose` zeros memory
+   via `CryptographicOperations.ZeroMemory`. NIP-44 zeros conversation key
+   + ECDH shared x in `finally`.
+6. **Exceptions, not `Result<T,E>`.** `Try*` variants for parsing untrusted
+   input; bool/nullable for normal protocol outcomes (relay rejection,
+   sig-verify result).
 
 ## NIPs implemented
 
 | NIP | What | Where |
 |----|------|-------|
-| 01 | events, canonical id, BIP-340 signing, relay protocol | Core + Relay |
-| 04 | legacy DM **decode only** (encrypt marked `[Obsolete]`) | Crypto (not in tests yet) |
-| 05 | DNS-based identifier verification + Profile (kind 0) | Relay |
-| 11 | relay information document | Relay |
+| 01 | events, canonical id, BIP-340, relay protocol | Core + Relay |
+| 04 | legacy DM **decode only** (encrypt obsoleted) | (placeholder) |
+| 05 | DNS-based identifier verification | Relay |
+| 11 | relay info document | Relay |
 | 13 | proof of work | Core/Events/ProofOfWork.cs |
 | 17 | private DMs (over NIP-59) | Crypto/Nip17.cs |
-| 19 | bech32 entities (`npub`, `nsec`, `note`, `nprofile`, `nevent`, `naddr`) | Core/Nip19/ |
+| 19 | bech32 entities (npub/nsec/note/nprofile/nevent/naddr) | Core/Nip19/ |
 | 21 | `nostr:` URI scheme | Core/Nip19/Nip21.cs |
-| 23 | long-form articles & drafts (kinds 30023/30024) | Core/Articles/ |
-| 42 | AUTH messages parsed; client-side helper not yet exposed | Relay (parser only) |
+| 23 | long-form articles & drafts (30023/30024) | Core/Articles/ |
+| 42 | AUTH messages parsed; client-side helper not exposed | Relay (parse only) |
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
 | 51 | lists & sets (public + NIP-44 self-encrypted private items) | Crypto/Lists/ |
 | 59 | gift wrap (used by NIP-17) | Crypto/Nip17.cs |
 
-**Not implemented (deferred):** NIP-02 (contact list helpers), NIP-07/46/65,
-NIP-57 zaps, NIP-09 deletion helpers, NIP-25 reactions, NIP-10 reply
-threading helpers. Adding them is mechanical given the building blocks.
+**Deferred:** NIP-02 contacts, NIP-07/46/65, NIP-57 zaps, NIP-09/25/10.
+Mechanical once needed.
 
-## Test vector sources
+## Test vectors
 
-| Suite | Source | Where embedded |
-|-------|--------|---------------|
-| BIP-173 bech32 valid/invalid | bitcoin/bips bip-0173 appendix | `Bech32Tests.cs` inline |
-| BIP-340 Schnorr | bitcoin/bips bip-0340/test-vectors.csv | `tests/NostrNet.Core.Tests/TestVectors/` (embedded resource) |
-| RFC 8439 ChaCha20 §2.3.2 + §2.4.2 | RFC 8439 | `ChaCha20Tests.cs` inline |
-| NIP-44 v2 official | paulmillr/nip44 nip44.vectors.json | `tests/NostrNet.Crypto.Tests/TestVectors/` (embedded resource) |
-| NIP-19 nprofile/nevent/naddr | Galaxoid Labs Swift Nostr tests | `Nip19Tests.cs` + `Bech32Tests.cs` inline |
-| Event id / signature interop | Swift Nostr (`da036de7…`, `f603166e…`) | `NostrEventTests.cs` inline |
-| NIP-13 partial-byte bit count | NIP-13 spec examples | `ProofOfWorkTests.cs` inline |
+| Suite | Source | Location |
+|-------|--------|----------|
+| BIP-173 bech32 | BIP-173 appendix | inline in `Bech32Tests.cs` |
+| BIP-340 Schnorr | bitcoin/bips test-vectors.csv | embedded resource in Core.Tests |
+| RFC 8439 ChaCha20 | RFC | inline in `ChaCha20Tests.cs` |
+| NIP-44 official | paulmillr/nip44 | embedded resource in Crypto.Tests |
+| NIP-19 / event id interop | Galaxoid Labs Swift Nostr | inline |
 
-**When adding new code that interacts with a NIP, find an interop vector
-before writing the impl.** Tests must pass against external implementations,
-not just round-trip their own output.
+**Rule:** find an interop vector before writing impl. Tests must pass
+against external implementations.
 
 ## Security guarantees
 
-- **Incoming events are verified automatically.** `RelayClient.Dispatch`
-  calls `ev.Event.Verify()` on every `EventMessage` before writing it to a
-  subscription channel. Events with a bad id or bad signature are silently
-  dropped. Callers consuming `SubscribeAsync` (directly or via `NostrClient`
-  / `RelayPool` / `Nip17.Unwrap` / etc.) can trust events without rechecking.
-  Events parsed manually from JSON via `NostrEvent.FromJson` are NOT verified
-  automatically — that's a deliberate split (the parser shouldn't refuse to
-  return malformed data the caller might want to inspect).
-- **NIP-17 unwrap re-verifies the inner seal.** Even after the outer gift
-  wrap is verified by the receive loop, the seal's signature and the
-  rumor's pubkey-equals-seal-author check both happen inside
-  `Nip17.Unwrap`. So the verified `Sender` cannot be spoofed by a malicious
-  gift-wrap signer.
-- **NIP-05 verification is fail-closed.** Any decode/HTTP/parse error
-  results in `IsVerified=false` with a `FailureReason`. No exception leaks
-  for normal "doesn't verify" paths.
+- **Incoming events are verified automatically** in `RelayClient.Dispatch`
+  before being written to the subscription channel. Bad id or bad sig →
+  silently dropped. `NostrEvent.FromJson` is **not** auto-verified — caller
+  responsibility.
+- **NIP-17 unwrap re-verifies the inner seal** (sig + rumor-pubkey-equals-seal-author),
+  so the surfaced `Sender` can't be spoofed by a malicious outer wrap.
+- **NIP-05 verification is fail-closed.** Decode/HTTP/parse errors →
+  `IsVerified=false` + `FailureReason`, never an exception bubbling out.
+- **`RelayPool` does NOT dedup events.** It yields every relay's delivery
+  of every event as a separate `SubscriptionEventReceived(Event, Relay)`.
+  Consumers dedup if they want; `NostrClient.SubscribeAsync` exposes the
+  relay info via `ReceivedEvent(Event, Relay)`.
 
-## Performance notes (per-event hot path)
+## Performance — hot-path notes
 
-The receive → verify → dispatch path is where almost all CPU time goes on a
-busy feed. Specific decisions worth knowing before changing this code:
+The receive→verify→dispatch path is where almost all CPU goes. Key
+decisions to know before editing:
 
-- **`EventSerializer.ComputeId`** writes canonical JSON straight into an
+- **`EventSerializer.ComputeId`** writes canonical JSON into an
   `ArrayBufferWriter<byte>` and hashes its `WrittenSpan` — no
-  `MemoryStream.ToArray()` copy. Pubkey hex is emitted via a stack-allocated
-  64-byte ASCII buffer using a `HexAscii` lookup table; never allocates a
-  `string`.
-- **`NostrEvent.FromJsonElement(JsonElement)`** parses events directly from
-  an already-decoded `JsonElement`. `RelayMessage.ParseEvent` uses this
-  overload, so the receive loop avoids the old `GetRawText()` → re-parse
-  round-trip. `FromJson(string)` exists for callers parsing from text.
-- **`NostrEvent.WriteTo(Utf8JsonWriter)`** (internal) writes the wire form
-  straight into a caller's writer. `RelayProtocol.BuildEventLikeMessage`
-  uses this to embed an event in the `["EVENT", ev]` envelope without going
-  through `ToJson()` → `JsonDocument.Parse` → `WriteTo`. Needs
-  `[InternalsVisibleTo("NostrNet.Relay")]` on Core (already set).
-- **`RelayClient.ReceiveLoopAsync`** uses an `ArrayPool<byte>`-rented frame
-  buffer and an `ArrayBufferWriter<byte>` for assembling multi-frame
-  messages. The loop never converts to `string` — `JsonDocument.Parse` is
-  called on the raw bytes. Call `pending.ResetWrittenCount()` after each
-  message (not `Clear`, which would re-zero the buffer).
-- **`Bech32.Encode`** writes into a stack-allocated `char[256]` for typical
-  NIP-19 outputs (npub/nsec/note/most nprofile/nevent) and falls back to
-  `ArrayPool<char>` only for very large `naddr`. Skips the `data.ToArray()`
-  copy that the old `string.Create` path required.
-- **`Nip44.EncryptInternal` / `DecryptInternal`** use `stackalloc` for ≤4KB
-  buffers and `ArrayPool<byte>` for larger; sensitive intermediates
-  (conversation key, private key bytes, ECDH shared x) are zeroed in
-  `finally` blocks via `CryptographicOperations.ZeroMemory`.
-
-**Things deliberately not optimized** (cold or amortized):
-
-- `Tag.P/E/T/...` allocate a fresh `string[]` per call. Two-element arrays;
-  call sites are once per tag, not per byte.
-- `Filter.ToJson`, `RelayProtocol.BuildSubscribeMessage`,
-  `NostrList.SerializeTagArray`, `Nip17.SerializeRumor` still use
-  `MemoryStream` + `ToArray`. They run once per subscription / publish /
-  send — WebSocket send latency dominates.
-- `TagExtensions.Named/AllValues/Pubkeys/EventIds` use `yield return`
-  iterators. Allocating an enumerator per query is fine for the typical
-  one-shot usage pattern; if you find yourself calling them in a tight loop
-  per event, materialize once with `.ToList()`.
+  `ToArray()` copy. Pubkey hex written via stack buffer + `HexAscii` LUT,
+  never a `string`.
+- **`NostrEvent.FromJsonElement(JsonElement)`** is the parse path used by
+  `RelayMessage.ParseEvent` — no `GetRawText()` re-parse.
+  **`NostrEvent.WriteTo(Utf8JsonWriter)`** is the serialize path used by
+  `RelayProtocol.BuildEventLikeMessage` — no `ToJson()` round-trip.
+- **`RelayClient.ReceiveLoopAsync`** stays in bytes throughout: pooled
+  receive buffer + `ArrayBufferWriter<byte>` for multi-frame assembly +
+  `JsonDocument.Parse(memory)` direct from bytes. Call
+  `pending.ResetWrittenCount()` between messages (not `Clear`).
+- **`Bech32.Encode`** stack-allocates a 256-char buffer for typical NIP-19
+  outputs; `ArrayPool<char>` for the rare large `naddr`.
 
 If you change `ComputeId` or `FromJsonElement`, run the full test suite —
 they're load-bearing for every NIP that builds or parses events.
 
 ## Gotchas / footguns
 
-- **`Encoding` namespace clash.** We have `NostrNet.Encoding` (bech32, TLV).
-  Any file that uses `System.Text.Encoding.UTF8` must add
-  `using SysEncoding = System.Text.Encoding;` and write `SysEncoding.UTF8`.
-  Otherwise `Encoding.UTF8` resolves to the nonexistent
-  `NostrNet.Encoding.UTF8` and the compiler complains.
-- **xUnit `Assert.Throws<T>(() => F())` and value-returning lambdas.**
-  When the lambda returns a non-`Task` value, the compiler may bind to the
-  obsolete `Func<Task>` overload. Wrap in a statement block:
-  `Assert.Throws<T>(() => { F(); });`
+- **`Encoding` namespace clash.** `NostrNet.Encoding` (bech32, TLV) shadows
+  `System.Text.Encoding`. Files needing `Encoding.UTF8` must add
+  `using SysEncoding = System.Text.Encoding;` and use `SysEncoding.UTF8`.
+- **xUnit `Assert.Throws<T>(() => F())` and value-returning lambdas.** The
+  compiler may bind to the obsolete `Func<Task>` overload. Wrap in a
+  statement block: `Assert.Throws<T>(() => { F(); });`.
 - **STJ source-gen rejects ref-like types in serialized records.**
-  `Profile.Owner` is a `PublicKey` (constructed from `ReadOnlySpan<byte>`),
-  which trips the SYSLIB1225 generator error. Mark such properties
-  `[JsonIgnore]` — set them programmatically after deserialization.
+  `PublicKey` (ctor takes `ReadOnlySpan<byte>`) trips SYSLIB1225. Mark such
+  properties `[JsonIgnore]` and set them after deserialization
+  (`Profile.Owner` does this).
 - **`stackalloc` into ref-struct method args.** Methods on `ref struct`
-  taking `ReadOnlySpan<byte>` need the parameter declared `scoped` so
-  callers can pass a stackalloc'd buffer (`TlvWriter.TryWrite`).
-- **Raw string interpolation `$$"""..."""` with JSON.** A `}}` at the end
-  of a JSON literal is parsed as an interpolation close, even with no
-  matching `{{`. Either escape with `$$$` and triple-brace interpolation,
-  or use plain string concatenation.
-- **NIP-01 canonical content escapes.** Use
+  taking `ReadOnlySpan<byte>` need the parameter declared `scoped`
+  (`TlvWriter.TryWrite`).
+- **Raw-string `$$"""..."""` with JSON.** A `}}` at the end of a JSON
+  literal is parsed as an interpolation close. Use string concatenation or
+  bump to `$$$"""..."""`.
+- **NIP-01 canonical content escapes** must use
   `JavaScriptEncoder.UnsafeRelaxedJsonEscaping` — do NOT escape `<`, `>`,
-  `&`, `/`, or non-ASCII. The 7 NIP-01 short-form escapes (`\n \r \t \b \f \" \\`)
-  are produced automatically.
-- **NIP-05 redirect ban.** The shared `HttpClient` in `Nip05.cs` is
-  constructed with `AllowAutoRedirect = false`. Don't replace it with a
-  default client.
-- **Internal Secp256k1 leaks.** If you need ECDH/sign/verify outside
-  `NostrNet.Core`, add the calling assembly to `Core`'s `InternalsVisibleTo`
-  (already done for `NostrNet.Crypto`, `NostrNet.Core.Tests`,
-  `NostrNet.Crypto.Tests`). Do **not** make `Secp256k1` public.
+  `&`, `/`, non-ASCII.
+- **NIP-05 `HttpClient` has `AllowAutoRedirect = false`** (spec MUST).
+  Don't replace the shared instance with a default client.
+- **Internal `Secp256k1` access.** Consumers outside `NostrNet.Core` add
+  themselves to `Core.csproj`'s `<InternalsVisibleTo>` (already done for
+  Crypto, Relay, both test projects). **Never make it public.**
 
-## Documentation standards
+## Documentation, file layout, build
 
-- Every `public` API has an XML doc comment. `GenerateDocumentationFile=true`
-  + `TreatWarningsAsErrors=true` make CS1591 a build error.
-- `<summary>` is one sentence. What it does, not how. If more is needed,
-  add `<remarks>`.
-- `<exception>` on anything that throws (except trivial `ArgumentNullException`
-  covered by NRT). `<param>` on non-obvious parameters (lengths, formats,
-  lifetime).
-- Cite the NIP/BIP/RFC in `<remarks>` with section numbers when behavior is
-  spec-defined.
-- Tone: factual, present tense. "Signs the event." not "This method will sign
-  the event."
-- **In code comments are for *why*, not *what*.** Default to none.
-
-## File layout conventions
-
-- One public type per file (small private helpers can co-locate).
-- Folder = sub-namespace. `Events/` → `NostrNet.Events`.
-- Test file name mirrors source: `Foo.cs` → `FooTests.cs`.
-- Cross-project test discoverability: tests reach internals via
-  `[InternalsVisibleTo("…")]` declared in the target project's csproj.
-
-## Build / CI
-
-- `dotnet restore && dotnet build && dotnet test` from repo root.
-- Sample CLI: `dotnet run --project samples/NostrNet.Sample.Console -- <cmd>`.
-- CI: `.github/workflows/ci.yml` — build + test on
-  `windows-latest` / `macos-latest` / `ubuntu-latest` on every push to main
-  and every PR, plus an AOT-publish smoke test of the sample on Linux.
-- Releases: `.github/workflows/release.yml` — triggered by `v*` tags
-  (e.g. `git tag v0.1.0 && git push --tags`). Packs all four .nupkg files
-  with the version derived from the tag and attaches them to a GitHub
-  release with auto-generated notes. Tags with a `-` (e.g. `v0.1.0-rc1`)
-  are marked pre-release automatically.
-- `Directory.Build.props` (root): TFM, nullable, warnings-as-errors,
-  code-style enforcement.
-- `src/Directory.Build.props`: AOT/trim, doc generation, NuGet metadata.
-- `tests/Directory.Build.props`: relax doc generation, mark `IsTestProject`.
+- Every `public` API has an XML doc comment; `GenerateDocumentationFile=true`
+  + `TreatWarningsAsErrors=true` makes missing docs a build error.
+  `<summary>` is one sentence; `<exception>` on anything that throws.
+  Code comments are for *why*, never *what*.
+- One public type per file. Folder = sub-namespace.
+  `tests/Foo/FooTests.cs` mirrors `src/.../Foo.cs`.
+- `dotnet build && dotnet test` from repo root. CLI sample:
+  `dotnet run --project samples/NostrNet.Sample.Console -- <cmd>`.
+- CI: `.github/workflows/ci.yml` (matrix + AOT smoke) and
+  `release.yml` (v* tags → `.nupkg` files attached to GitHub release).

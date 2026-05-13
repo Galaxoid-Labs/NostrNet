@@ -10,7 +10,9 @@ namespace NostrNet.Relay;
 public abstract record SubscriptionEvent;
 
 /// <summary>An event matching the subscription's filters was delivered.</summary>
-public sealed record SubscriptionEventReceived(NostrEvent Event) : SubscriptionEvent;
+/// <param name="Event">The verified Nostr event (id + signature already checked).</param>
+/// <param name="Relay">The relay this occurrence was received from. When the same event is carried by multiple relays, each relay's delivery is yielded as its own <see cref="SubscriptionEventReceived"/> — consumers that want a single occurrence per event id should dedup explicitly.</param>
+public sealed record SubscriptionEventReceived(NostrEvent Event, Uri Relay) : SubscriptionEvent;
 
 /// <summary>
 /// The relay has finished delivering stored events; any further events on

@@ -152,7 +152,6 @@ public sealed class RelayPool : IAsyncDisposable
             SingleWriter = false,
         });
 
-        var seen = new ConcurrentDictionary<string, byte>();
         int eoseCount = 0;
         int closedCount = 0;
         int totalRelays = snapshot.Length;
@@ -168,11 +167,12 @@ public sealed class RelayPool : IAsyncDisposable
                     switch (ev)
                     {
                         case SubscriptionEventReceived received:
-                            if (seen.TryAdd(received.Event.Id.ToHex(), 0))
-                            {
-                                await merged.Writer.WriteAsync(received, linked.Token).ConfigureAwait(false);
-                            }
-
+                            // No dedup — consumers see every relay's
+                            // delivery of every event. The SubscriptionEventReceived.Relay
+                            // tells them where each one came from. Stateful
+                            // dedup (if needed) belongs in the consumer, who
+                            // knows what storage / lifetime they want.
+                            await merged.Writer.WriteAsync(received, linked.Token).ConfigureAwait(false);
                             break;
 
                         case SubscriptionEndOfStoredEvents:

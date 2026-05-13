@@ -149,14 +149,15 @@ async Task<int> ListenFeedAsync(string[] argv)
 
     try
     {
-        await foreach (var ev in client.SubscribeNotesAsync(
+        await foreach (var received in client.SubscribeNotesAsync(
             authors: new[] { key.PublicKey },
             limit: 50,
             cancellationToken: cts.Token).ConfigureAwait(false))
         {
+            var ev = received.Event;
             string preview = ev.Content.Length > 80 ? ev.Content[..77] + "..." : ev.Content;
             preview = preview.ReplaceLineEndings(" ");
-            Console.WriteLine($"  {ev.CreatedAt}  {preview}");
+            Console.WriteLine($"  [{received.Relay.Host}] {ev.CreatedAt}  {preview}");
         }
     }
     catch (OperationCanceledException)

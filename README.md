@@ -161,10 +161,10 @@ public partial class NostrNode : Node
             .UseRelays("wss://relay.damus.io")
             .ConnectAsync();
 
-        await foreach (var note in _client.SubscribeNotesAsync(limit: 20))
+        await foreach (var received in _client.SubscribeNotesAsync(limit: 20))
         {
             // Back on the main thread — node access is safe.
-            GD.Print($"{note.CreatedAt}: {note.Content}");
+            GD.Print($"[{received.Relay.Host}] {received.Event.Content}");
         }
     }
 
@@ -218,6 +218,42 @@ need transitively.
 
 ## Quickstart
 
+### Connect with or without a key
+
+The client can be constructed with a signing key (full feature set) or
+without one (read-only — subscribe, fetch relay info, publish pre-signed
+events). A key can also be attached later without rebuilding the
+connection.
+
+```csharp
+// Full client: post / DM / subscribe to own DMs all available
+await using var client = await NostrClient.Builder(myKey)
+    .UseRelays("wss://relay.damus.io")
+    .ConnectAsync();
+
+// Read-only client: subscribe to public events while the user hasn't
+// imported a key yet
+await using var anon = await NostrClient.Builder()
+    .UseRelays("wss://relay.damus.io")
+    .ConnectAsync();
+
+await foreach (var received in anon.SubscribeNotesAsync(limit: 50))
+    Console.WriteLine(received.Event.Content);
+
+// Later — user creates / imports a key. Attach it without reconnecting:
+var newKey = PrivateKey.Generate();
+anon.SetKey(newKey);
+await anon.PostNoteAsync("now I'm signed in");
+
+// Sign out (without disposing the client):
+anon.ClearKey();
+```
+
+Helpers that need to sign or decrypt (`PostNoteAsync`,
+`SendDirectMessageAsync`, `SubscribeDirectMessagesAsync`) throw
+`InvalidOperationException` when called on a key-less client — guard with
+`client.HasKey` if you're unsure of state.
+
 ### Generate or load a key
 
 ```csharp
@@ -266,7 +302,6 @@ manually from JSON via `NostrEvent.FromJson` are not verified — call
 ```csharp
 using NostrNet.Relay;
 
-// Your own notes from the last hour
 var filter = new Filter
 {
     Authors = [key.PublicKey.ToHex()],
@@ -275,17 +310,40 @@ var filter = new Filter
     Limit = 50,
 };
 
-await foreach (var ev in client.SubscribeAsync([filter]))
-    Console.WriteLine($"{ev.CreatedAt}  {ev.Content}");
+await foreach (var received in client.SubscribeAsync([filter]))
+{
+    Console.WriteLine($"[{received.Relay.Host}] {received.Event.CreatedAt}  {received.Event.Content}");
+}
 
 // Convenience for the common case
-await foreach (var note in client.SubscribeNotesAsync(
+await foreach (var received in client.SubscribeNotesAsync(
     authors: [key.PublicKey], limit: 50))
-    Console.WriteLine(note.Content);
+{
+    Console.WriteLine(received.Event.Content);
+}
 ```
 
-Subscriptions are `IAsyncEnumerable<NostrEvent>` — they yield events as they
-arrive and complete when the relay closes the subscription or the
+Each yielded item is a `ReceivedEvent(NostrEvent Event, Uri Relay)` —
+**the relay that delivered this occurrence is exposed**. The library
+intentionally **does not store or dedup events**; that's your call as the
+consumer. When multiple relays carry the same event, you'll see it once
+per relay, each with a different `Relay`. For a UI feed that should show
+each event once, dedup explicitly:
+
+```csharp
+var seen = new HashSet<NostrNet.Events.EventId>();
+await foreach (var received in client.SubscribeNotesAsync(limit: 100))
+{
+    if (!seen.Add(received.Event.Id)) continue;   // already shown
+    feedListBox.Items.Add(received.Event.Content);
+}
+```
+
+For relay-coverage analytics, **don't** dedup — track which relays carry
+which event ids.
+
+Subscriptions are `IAsyncEnumerable<ReceivedEvent>` — they yield as events
+arrive and complete when all relays close the subscription or the
 `CancellationToken` fires.
 
 ### NIP-17 direct messages
@@ -296,9 +354,10 @@ var bob = PublicKey.FromNpub("npub1...");
 // Send
 await client.SendDirectMessageAsync(bob, "hey bob");
 
-// Receive — gift wraps are unwrapped automatically
+// Receive — gift wraps are unwrapped automatically; `dm.Relay` tells you
+// which relay carried this delivery (handy for multi-relay setups).
 await foreach (var dm in client.SubscribeDirectMessagesAsync())
-    Console.WriteLine($"{dm.Sender.ToNpub()}: {dm.Plaintext}");
+    Console.WriteLine($"[{dm.Relay?.Host}] {dm.Sender.ToNpub()}: {dm.Plaintext}");
 ```
 
 Under the hood: `NostrNet.Crypto.Nip17.CreateDirectMessage` builds a rumor
@@ -737,20 +796,20 @@ For pure background work (worker services, console apps), add
 
 ### Subscriptions: `await foreach` doesn't block the thread, but does park the method
 
-`SubscribeAsync` returns `IAsyncEnumerable<NostrEvent>` and yields events as
-they arrive. **The UI thread stays responsive during a subscription** (the
-message pump keeps running between awaits), but **any code after the
-`await foreach` won't run until the subscription ends** — when the relay
-closes it, your `CancellationToken` fires, or the stream completes
-naturally.
+`SubscribeAsync` returns `IAsyncEnumerable<ReceivedEvent>` and yields each
+relay's delivery as it arrives. **The UI thread stays responsive during a
+subscription** (the message pump keeps running between awaits), but **any
+code after the `await foreach` won't run until the subscription ends** —
+when all relays close it, your `CancellationToken` fires, or the stream
+completes naturally.
 
 ```csharp
 // Code after the loop is parked until the subscription ends.
 async Task RunFeedAsync(CancellationToken ct)
 {
-    await foreach (var note in client.SubscribeNotesAsync(authors: [pub], cancellationToken: ct))
-        feedListBox.Items.Add(note.Content);
-    
+    await foreach (var received in client.SubscribeNotesAsync(authors: [pub], cancellationToken: ct))
+        feedListBox.Items.Add(received.Event.Content);
+
     statusLabel.Text = "Subscription closed";   // runs only after the loop ends
 }
 ```
@@ -769,8 +828,8 @@ private async Task ConsumeFeedAsync(CancellationToken ct)
 {
     try
     {
-        await foreach (var note in client.SubscribeNotesAsync(authors: [pub], cancellationToken: ct))
-            feedListBox.Items.Add(note.Content);
+        await foreach (var received in client.SubscribeNotesAsync(authors: [pub], cancellationToken: ct))
+            feedListBox.Items.Add(received.Event.Content);
     }
     catch (OperationCanceledException) { /* clean shutdown */ }
 }
@@ -780,17 +839,17 @@ For multi-consumer or producer/consumer scenarios, decouple via a
 `Channel<T>`:
 
 ```csharp
-var feed = Channel.CreateUnbounded<NostrEvent>();
+var feed = Channel.CreateUnbounded<ReceivedEvent>();
 
 _ = Task.Run(async () =>
 {
-    await foreach (var ev in client.SubscribeAsync(filters, ct).ConfigureAwait(false))
-        await feed.Writer.WriteAsync(ev, ct).ConfigureAwait(false);
+    await foreach (var received in client.SubscribeAsync(filters, ct).ConfigureAwait(false))
+        await feed.Writer.WriteAsync(received, ct).ConfigureAwait(false);
 }, ct);
 
 // One or more consumers, possibly on different threads
-await foreach (var ev in feed.Reader.ReadAllAsync(ct))
-    ProcessEvent(ev);
+await foreach (var received in feed.Reader.ReadAllAsync(ct))
+    ProcessEvent(received.Event, received.Relay);
 ```
 
 ### CPU-bound work: wrap in `Task.Run`

@@ -369,7 +369,9 @@ public sealed class RelayClient : IRelayClient
 
                 if (_subscriptions.TryGetValue(ev.SubscriptionId, out var subEv))
                 {
-                    subEv.Writer.TryWrite(new SubscriptionEventReceived(ev.Event));
+                    // _uri is set inside ConnectAsync before the receive
+                    // loop ever starts, so it's non-null here.
+                    subEv.Writer.TryWrite(new SubscriptionEventReceived(ev.Event, _uri!));
                 }
 
                 break;

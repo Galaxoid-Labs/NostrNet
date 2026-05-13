@@ -9,48 +9,126 @@ using NostrNet.Relay;
 namespace NostrNet.Client;
 
 /// <summary>
-/// High-level convenience client: owns a <see cref="RelayPool"/> and a
-/// <see cref="PrivateKey"/>, exposes ergonomic helpers for the most common
-/// Nostr operations (post a note, send a DM, subscribe to your own feed).
+/// High-level convenience client: owns a <see cref="RelayPool"/> and optionally
+/// a <see cref="PrivateKey"/>, exposes ergonomic helpers for the most common
+/// Nostr operations (post a note, send a DM, subscribe to a feed).
 /// </summary>
 /// <remarks>
-/// Construct via <see cref="Builder"/>:
+/// <para>
+/// Construct with a key for the full feature set:
+/// </para>
 /// <code>
 /// await using var client = await NostrClient.Builder(privateKey)
 ///     .UseRelays("wss://relay.damus.io", "wss://nos.lol")
 ///     .ConnectAsync();
 /// await client.PostNoteAsync("hello!");
 /// </code>
+///
+/// <para>
+/// Or construct without a key for read-only browsing — subscriptions and
+/// pre-signed publishes work, but anything that needs to sign or decrypt
+/// (post, send DM, subscribe to your own DMs) throws
+/// <see cref="InvalidOperationException"/>. Check <see cref="HasKey"/> before
+/// calling those.
+/// </para>
+/// <code>
+/// await using var client = await NostrClient.Builder()
+///     .UseRelays("wss://relay.damus.io")
+///     .ConnectAsync();
+/// await foreach (var note in client.SubscribeNotesAsync(limit: 100))
+///     Console.WriteLine(note.Content);
+/// </code>
+///
+/// <para>
+/// A key can be attached later via <see cref="SetKey"/> (and detached via
+/// <see cref="ClearKey"/>) without recreating the relay connections —
+/// useful for "connect first, sign in later" flows.
+/// </para>
 /// </remarks>
 public sealed class NostrClient : IAsyncDisposable
 {
-    private readonly PrivateKey _key;
+    private PrivateKey? _key;
     private readonly RelayPool _pool;
-    private bool _ownsPool;
+    private readonly bool _ownsPool;
     private bool _disposed;
 
-    internal NostrClient(PrivateKey key, RelayPool pool, bool ownsPool)
+    internal NostrClient(PrivateKey? key, RelayPool pool, bool ownsPool)
     {
         _key = key;
         _pool = pool;
         _ownsPool = ownsPool;
     }
 
-    /// <summary>Begins fluent construction of a client bound to <paramref name="key"/>.</summary>
+    /// <summary>
+    /// Attaches a private key to this client. Allows graduating an anonymous
+    /// client to a signing one without recreating the relay connections —
+    /// useful for "connect first, sign in later" flows.
+    /// </summary>
+    /// <remarks>
+    /// In-flight subscriptions and publishes captured the previous key at
+    /// their start and continue with it; only subsequent calls see the new
+    /// key. The client does not take ownership of the key — the caller is
+    /// responsible for its lifetime (typically via <c>using</c> /
+    /// <c>Dispose</c>) and must not dispose it while the client still uses it.
+    /// </remarks>
+    public void SetKey(PrivateKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        EnsureNotDisposed();
+        _key = key;
+    }
+
+    /// <summary>
+    /// Detaches the current private key. Subsequent calls to signing- or
+    /// decryption-dependent methods will throw. Existing subscriptions and
+    /// publishes that captured the previous key continue unaffected.
+    /// </summary>
+    /// <remarks>
+    /// Does not dispose the key — the caller owns its lifetime. Combine
+    /// with <c>key.Dispose()</c> if you want to zero the secret as well.
+    /// </remarks>
+    public void ClearKey()
+    {
+        EnsureNotDisposed();
+        _key = null;
+    }
+
+    /// <summary>
+    /// Begins fluent construction of a read-only client (no signing key).
+    /// Subscribe and publish-pre-signed work; posting and DM helpers throw.
+    /// </summary>
+    public static NostrClientBuilder Builder() => new(key: null);
+
+    /// <summary>
+    /// Begins fluent construction of a client bound to <paramref name="key"/>.
+    /// Enables every helper including <see cref="PostNoteAsync"/>,
+    /// <see cref="SendDirectMessageAsync"/>, and
+    /// <see cref="SubscribeDirectMessagesAsync"/>.
+    /// </summary>
     public static NostrClientBuilder Builder(PrivateKey key)
     {
         ArgumentNullException.ThrowIfNull(key);
         return new NostrClientBuilder(key);
     }
 
-    /// <summary>The client's public key.</summary>
-    public PublicKey PublicKey => _key.PublicKey;
+    /// <summary>
+    /// True if this client was constructed with a private key. When false,
+    /// signing- or decryption-dependent methods throw.
+    /// </summary>
+    public bool HasKey => _key is not null;
+
+    /// <summary>
+    /// The client's public key, or <c>null</c> if the client was constructed
+    /// without a key.
+    /// </summary>
+    public PublicKey? PublicKey => _key?.PublicKey;
 
     /// <summary>The relays currently in the pool.</summary>
     public IReadOnlyCollection<Uri> Relays => _pool.Uris;
 
     /// <summary>
-    /// Publishes a pre-signed event to all relays in the pool.
+    /// Publishes a pre-signed event to all relays in the pool. Does not
+    /// require this client to have a key — the event is already signed.
     /// </summary>
     public Task<IReadOnlyDictionary<Uri, PublishResult>> PublishAsync(
         NostrEvent ev,
@@ -63,21 +141,23 @@ public sealed class NostrClient : IAsyncDisposable
     /// <summary>
     /// Signs and publishes a kind-1 text note containing <paramref name="content"/>.
     /// </summary>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
     public async Task<IReadOnlyDictionary<Uri, PublishResult>> PostNoteAsync(
         string content,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
         EnsureNotDisposed();
+        var key = RequireKey(nameof(PostNoteAsync));
 
         var ev = new UnsignedEvent
         {
-            PubKey = _key.PublicKey,
+            PubKey = key.PublicKey,
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             Kind = 1,
             Tags = Array.Empty<IReadOnlyList<string>>(),
             Content = content,
-        }.Sign(_key);
+        }.Sign(key);
 
         return await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
     }
@@ -89,6 +169,7 @@ public sealed class NostrClient : IAsyncDisposable
     /// The plaintext is wrapped per NIP-17/NIP-59 (rumor → seal → gift wrap)
     /// using the client's private key and an ephemeral key for the outer wrap.
     /// </remarks>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
     public async Task<IReadOnlyDictionary<Uri, PublishResult>> SendDirectMessageAsync(
         PublicKey recipient,
         string content,
@@ -97,15 +178,23 @@ public sealed class NostrClient : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(recipient);
         ArgumentNullException.ThrowIfNull(content);
         EnsureNotDisposed();
+        var key = RequireKey(nameof(SendDirectMessageAsync));
 
-        NostrEvent giftWrap = Nip17.CreateDirectMessage(content, _key, recipient);
+        NostrEvent giftWrap = Nip17.CreateDirectMessage(content, key, recipient);
         return await _pool.PublishAsync(giftWrap, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Subscribes with the given filters and yields every matching event.
+    /// Subscribes with the given filters and yields each event as it arrives,
+    /// tagged with the relay that delivered it. Works without a key.
     /// </summary>
-    public async IAsyncEnumerable<NostrEvent> SubscribeAsync(
+    /// <remarks>
+    /// When multiple relays carry the same event, each delivery is yielded
+    /// separately — the consumer decides whether to dedup. For a feed-style
+    /// "each event once" experience, dedup on <c>received.Event.Id</c> in
+    /// the loop. For relay-coverage analysis, keep all occurrences.
+    /// </remarks>
+    public async IAsyncEnumerable<ReceivedEvent> SubscribeAsync(
         IReadOnlyList<Filter> filters,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -117,7 +206,7 @@ public sealed class NostrClient : IAsyncDisposable
         {
             if (msg is SubscriptionEventReceived received)
             {
-                yield return received.Event;
+                yield return new ReceivedEvent(received.Event, received.Relay);
             }
             else if (msg is SubscriptionClosed)
             {
@@ -127,9 +216,15 @@ public sealed class NostrClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Subscribes to text notes (kind 1) optionally narrowed to <paramref name="authors"/>.
+    /// Subscribes to text notes (kind 1) optionally narrowed to
+    /// <paramref name="authors"/>. Works without a key.
     /// </summary>
-    public IAsyncEnumerable<NostrEvent> SubscribeNotesAsync(
+    /// <remarks>
+    /// Each yielded <see cref="ReceivedEvent"/> carries the originating
+    /// relay. Multiple relays may deliver the same note — see
+    /// <see cref="SubscribeAsync"/>.
+    /// </remarks>
+    public IAsyncEnumerable<ReceivedEvent> SubscribeNotesAsync(
         IReadOnlyList<PublicKey>? authors = null,
         int? limit = null,
         CancellationToken cancellationToken = default)
@@ -154,26 +249,28 @@ public sealed class NostrClient : IAsyncDisposable
     /// is normal during operation (other recipients' messages, malformed
     /// payloads, etc.).
     /// </remarks>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
     public async IAsyncEnumerable<UnwrappedDirectMessage> SubscribeDirectMessagesAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         EnsureNotDisposed();
+        var key = RequireKey(nameof(SubscribeDirectMessagesAsync));
 
         var filter = new Filter
         {
             Kinds = new[] { Nip17.GiftWrapKind },
             TagFilters = new Dictionary<string, IReadOnlyList<string>>
             {
-                ["p"] = new[] { _key.PublicKey.ToHex() },
+                ["p"] = new[] { key.PublicKey.ToHex() },
             },
         };
 
-        await foreach (var ev in SubscribeAsync(new[] { filter }, cancellationToken).ConfigureAwait(false))
+        await foreach (var received in SubscribeAsync(new[] { filter }, cancellationToken).ConfigureAwait(false))
         {
             UnwrappedDirectMessage? unwrapped = null;
             try
             {
-                unwrapped = Nip17.Unwrap(ev, _key);
+                unwrapped = Nip17.Unwrap(received.Event, key) with { Relay = received.Relay };
             }
             catch
             {
@@ -209,15 +306,26 @@ public sealed class NostrClient : IAsyncDisposable
             throw new ObjectDisposedException(nameof(NostrClient));
         }
     }
+
+    private PrivateKey RequireKey(string operation)
+    {
+        if (_key is null)
+        {
+            throw new InvalidOperationException(
+                $"{operation} requires a private key. Construct the client with NostrClient.Builder(privateKey).");
+        }
+
+        return _key;
+    }
 }
 
 /// <summary>Fluent builder for <see cref="NostrClient"/>.</summary>
 public sealed class NostrClientBuilder
 {
-    private readonly PrivateKey _key;
+    private readonly PrivateKey? _key;
     private readonly List<Uri> _relays = new();
 
-    internal NostrClientBuilder(PrivateKey key)
+    internal NostrClientBuilder(PrivateKey? key)
     {
         _key = key;
     }

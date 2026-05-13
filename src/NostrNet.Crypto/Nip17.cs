@@ -286,8 +286,10 @@ public static class Nip17
 /// <param name="Plaintext">The decrypted message text.</param>
 /// <param name="CreatedAt">The real (non-jittered) timestamp from the inner rumor.</param>
 /// <param name="Tags">The rumor's tags (typically including the <c>p</c>-tag for the recipient).</param>
+/// <param name="Relay">The relay that delivered the gift wrap, or <c>null</c> if unwrap was performed offline.</param>
 public sealed record UnwrappedDirectMessage(
     PublicKey Sender,
     string Plaintext,
     DateTimeOffset CreatedAt,
-    IReadOnlyList<IReadOnlyList<string>> Tags);
+    IReadOnlyList<IReadOnlyList<string>> Tags,
+    Uri? Relay = null);
