@@ -55,4 +55,12 @@ public interface IRelayClient : IAsyncDisposable
     /// </summary>
     /// <exception cref="InvalidOperationException">No AUTH challenge has been received yet.</exception>
     Task<PublishResult> AuthenticateAsync(PrivateKey key, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// When set, the client automatically responds to any NIP-42 <c>AUTH</c>
+    /// challenge from this relay using this key. Set to <c>null</c> to
+    /// disable auto-auth. Auto-auth runs as a fire-and-forget background
+    /// task; failures are silently swallowed.
+    /// </summary>
+    PrivateKey? AutoAuthKey { get; set; }
 }

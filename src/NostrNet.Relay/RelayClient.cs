@@ -39,6 +39,7 @@ public sealed class RelayClient : IRelayClient
     private Task? _receiveTask;
     private Uri? _uri;
     private volatile string? _latestAuthChallenge;
+    private PrivateKey? _autoAuthKey;
     private int _state; // 0=new, 1=connecting, 2=connected, 3=disposed
 
     /// <inheritdoc/>
@@ -46,6 +47,19 @@ public sealed class RelayClient : IRelayClient
 
     /// <inheritdoc/>
     public string? LatestAuthChallenge => _latestAuthChallenge;
+
+    /// <inheritdoc/>
+    public PrivateKey? AutoAuthKey
+    {
+        get => _autoAuthKey;
+        set
+        {
+            _autoAuthKey = value;
+            // If a challenge already arrived before auto-auth was configured,
+            // honor it now.
+            TryAutoAuth();
+        }
+    }
 
     /// <inheritdoc/>
     public bool IsConnected => _state == 2 && _webSocket.State == WebSocketState.Open;
@@ -289,6 +303,32 @@ public sealed class RelayClient : IRelayClient
         _runCts?.Dispose();
     }
 
+    private void TryAutoAuth()
+    {
+        // Auto-auth is best-effort. Conditions: configured key, a challenge
+        // is available, and we're connected. Failures (no challenge yet,
+        // not connected, transport errors, rejection) are silently swallowed
+        // — surfacing them would require a more elaborate notification
+        // mechanism we haven't built yet.
+        PrivateKey? key = _autoAuthKey;
+        if (key is null || _latestAuthChallenge is null || _state != 2)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await AuthenticateAsync(key, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // best-effort
+            }
+        });
+    }
+
     private void EnsureConnected()
     {
         if (_state == 3)
@@ -458,6 +498,7 @@ public sealed class RelayClient : IRelayClient
 
             case AuthChallengeMessage auth:
                 _latestAuthChallenge = auth.Challenge;
+                TryAutoAuth();
                 break;
 
             case NoticeMessage:

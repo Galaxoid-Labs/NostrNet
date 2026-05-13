@@ -15,6 +15,7 @@ namespace NostrNet.Relay;
 public sealed class RelayPool : IAsyncDisposable
 {
     private readonly Dictionary<Uri, IRelayClient> _clients = new();
+    private Keys.PrivateKey? _autoAuthKey;
     private int _disposed;
 
     /// <summary>The URIs of the relays currently in the pool.</summary>
@@ -40,6 +41,7 @@ public sealed class RelayPool : IAsyncDisposable
             try
             {
                 await client.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+                client.AutoAuthKey = _autoAuthKey;   // pick up current auto-auth
                 lock (_clients)
                 {
                     _clients[uri] = client;
@@ -57,7 +59,8 @@ public sealed class RelayPool : IAsyncDisposable
     }
 
     /// <summary>
-    /// Adds an already-connected client to the pool.
+    /// Adds an already-connected client to the pool. If auto-auth is
+    /// configured on the pool, it's propagated to the new client.
     /// </summary>
     public void Add(Uri uri, IRelayClient client)
     {
@@ -67,6 +70,30 @@ public sealed class RelayPool : IAsyncDisposable
         lock (_clients)
         {
             _clients[uri] = client;
+        }
+
+        client.AutoAuthKey = _autoAuthKey;
+    }
+
+    /// <summary>
+    /// Sets (or clears, when <paramref name="key"/> is null) the auto-auth
+    /// key used by every client in the pool. <c>NostrClient</c> calls this
+    /// when its key state changes; most consumers don't need to call it.
+    /// </summary>
+    public void SetAutoAuthKey(Keys.PrivateKey? key)
+    {
+        EnsureNotDisposed();
+        _autoAuthKey = key;
+
+        IRelayClient[] snapshot;
+        lock (_clients)
+        {
+            snapshot = _clients.Values.ToArray();
+        }
+
+        foreach (var client in snapshot)
+        {
+            client.AutoAuthKey = key;
         }
     }
 

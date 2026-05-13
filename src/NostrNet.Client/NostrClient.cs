@@ -50,13 +50,16 @@ public sealed class NostrClient : IAsyncDisposable
     private PrivateKey? _key;
     private readonly RelayPool _pool;
     private readonly bool _ownsPool;
+    private bool _autoAuth;
     private bool _disposed;
 
-    internal NostrClient(PrivateKey? key, RelayPool pool, bool ownsPool)
+    internal NostrClient(PrivateKey? key, RelayPool pool, bool ownsPool, bool autoAuth)
     {
         _key = key;
         _pool = pool;
         _ownsPool = ownsPool;
+        _autoAuth = autoAuth;
+        SyncAutoAuth();
     }
 
     /// <summary>
@@ -76,6 +79,7 @@ public sealed class NostrClient : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(key);
         EnsureNotDisposed();
         _key = key;
+        SyncAutoAuth();
     }
 
     /// <summary>
@@ -91,7 +95,33 @@ public sealed class NostrClient : IAsyncDisposable
     {
         EnsureNotDisposed();
         _key = null;
+        SyncAutoAuth();
     }
+
+    /// <summary>
+    /// When <c>true</c> (the default), the client automatically responds to
+    /// any NIP-42 <c>AUTH</c> challenge from a connected relay using the
+    /// current key. Set to <c>false</c> to opt out; you can still call
+    /// <see cref="AuthenticateAllAsync"/> manually.
+    /// </summary>
+    /// <remarks>
+    /// Auto-auth is best-effort and fire-and-forget — if the relay rejects
+    /// the AUTH event, the failure is silently swallowed. For visibility,
+    /// disable auto-auth and call <see cref="AuthenticateAllAsync"/> when
+    /// you want a result.
+    /// </remarks>
+    public bool AutoAuth
+    {
+        get => _autoAuth;
+        set
+        {
+            EnsureNotDisposed();
+            _autoAuth = value;
+            SyncAutoAuth();
+        }
+    }
+
+    private void SyncAutoAuth() => _pool.SetAutoAuthKey(_autoAuth ? _key : null);
 
     /// <summary>
     /// Begins fluent construction of a read-only client (no signing key).
@@ -338,10 +368,22 @@ public sealed class NostrClientBuilder
 {
     private readonly PrivateKey? _key;
     private readonly List<Uri> _relays = new();
+    private bool _autoAuth = true;
 
     internal NostrClientBuilder(PrivateKey? key)
     {
         _key = key;
+    }
+
+    /// <summary>
+    /// Enables (default) or disables automatic NIP-42 AUTH responses. When
+    /// enabled and the client has a key, every <c>AUTH</c> challenge from a
+    /// connected relay is answered in the background.
+    /// </summary>
+    public NostrClientBuilder WithAutoAuth(bool enabled)
+    {
+        _autoAuth = enabled;
+        return this;
     }
 
     /// <summary>Adds relay URIs from string form.</summary>
@@ -376,7 +418,7 @@ public sealed class NostrClientBuilder
         try
         {
             await pool.ConnectAsync(_relays, cancellationToken).ConfigureAwait(false);
-            return new NostrClient(_key, pool, ownsPool: true);
+            return new NostrClient(_key, pool, ownsPool: true, _autoAuth);
         }
         catch
         {
