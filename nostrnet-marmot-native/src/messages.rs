@@ -48,7 +48,7 @@ pub unsafe fn encrypt_application_message(
         None => return fail(ErrorCode::NullArgument, "plaintext pointer is null"),
     };
 
-    let mut group = match crate::group::load_group(&provider.crypto, &group_id) {
+    let mut group = match crate::group::load_group(provider, &group_id) {
         Ok(g) => g,
         Err((c, m)) => return fail(c, m),
     };
@@ -113,7 +113,7 @@ pub unsafe fn process_incoming_message(
         None => return fail(ErrorCode::NullArgument, "message pointer is null"),
     };
 
-    let mut group = match crate::group::load_group(&provider.crypto, &group_id) {
+    let mut group = match crate::group::load_group(provider, &group_id) {
         Ok(g) => g,
         Err((c, m)) => return fail(c, m),
     };

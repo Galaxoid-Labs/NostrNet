@@ -26,6 +26,7 @@
 mod buffer;
 mod errors;
 mod group;
+mod group_map;
 mod keypackage;
 mod messages;
 mod provider;

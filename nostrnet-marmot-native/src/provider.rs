@@ -62,33 +62,59 @@ impl OpenMlsProvider for MarmotCryptoProvider {
 
 pub struct Provider {
     pub(crate) crypto: MarmotCryptoProvider,
+    /// Marmot-specific metadata that doesn't fit OpenMLS's storage trait.
+    /// Currently: a (nostr_group_id, mls_group_id) mapping so we can
+    /// look up OpenMLS groups by the 32-byte Nostr group id even when
+    /// the inviter used a different-length MLS GroupId (e.g. mdk-core
+    /// and White Noise use 16 bytes).
+    pub(crate) marmot_meta: std::sync::Mutex<rusqlite::Connection>,
 }
 
 impl Provider {
     /// Open an in-memory provider (no persistence).
     pub fn new() -> Self {
-        Self::open(Connection::open_in_memory().expect("rusqlite open_in_memory"))
+        let openmls_conn =
+            Connection::open_in_memory().expect("rusqlite open_in_memory (openmls)");
+        let meta_conn =
+            rusqlite::Connection::open_in_memory().expect("rusqlite open_in_memory (meta)");
+        Self::open(openmls_conn, meta_conn)
     }
 
     /// Open a provider with state persisted at the given filesystem path.
     /// Returns an error if the path cannot be opened or the schema
     /// migrations fail.
     pub fn open_at_path(path: &Path) -> Result<Self, String> {
-        let conn = Connection::open(path)
-            .map_err(|e| format!("open SQLite at {}: {e}", path.display()))?;
-        Ok(Self::open(conn))
+        let openmls_conn = Connection::open(path)
+            .map_err(|e| format!("open SQLite at {}: {e} (openmls)", path.display()))?;
+        let meta_conn = rusqlite::Connection::open(path)
+            .map_err(|e| format!("open SQLite at {}: {e} (marmot meta)", path.display()))?;
+        Ok(Self::open(openmls_conn, meta_conn))
     }
 
-    fn open(conn: Connection) -> Self {
-        let mut storage = SqliteStorageProvider::<JsonCodec, Connection>::new(conn);
+    fn open(openmls_conn: Connection, meta_conn: rusqlite::Connection) -> Self {
+        let mut storage = SqliteStorageProvider::<JsonCodec, Connection>::new(openmls_conn);
         storage
             .run_migrations()
             .expect("SqliteStorageProvider::run_migrations (schema)");
+
+        // Marmot metadata tables. Currently just the group-id mapping;
+        // future entries (e.g. cached NostrGroupData) can join this table.
+        meta_conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS marmot_group_map (
+                    nostr_group_id BLOB PRIMARY KEY,
+                    mls_group_id   BLOB NOT NULL
+                )",
+                [],
+            )
+            .expect("marmot_meta: create table");
+
         Self {
             crypto: MarmotCryptoProvider {
                 crypto: RustCrypto::default(),
                 storage,
             },
+            marmot_meta: std::sync::Mutex::new(meta_conn),
         }
     }
 }

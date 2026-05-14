@@ -13,17 +13,52 @@ use crate::provider::MarmotCryptoProvider;
 use openmls_traits::types::SignatureScheme;
 use tls_codec::{Deserialize, Serialize};
 
-/// Loads an MlsGroup by id from storage, returning a uniform error if absent.
+/// Loads an MlsGroup by the 32-byte Nostr group id (the h-tag value
+/// the .NET layer keys on). Internally translates to the underlying
+/// MLS GroupId via the `marmot_group_map` table — required because
+/// other Marmot clients (mdk-core / White Noise) pick MLS GroupId
+/// values that aren't equal to the Nostr group id.
 pub(crate) fn load_group(
-    crypto: &MarmotCryptoProvider,
-    group_id: &[u8; 32],
+    provider: &Provider,
+    nostr_group_id: &[u8; 32],
 ) -> Result<MlsGroup, (ErrorCode, String)> {
-    let group_id_obj = GroupId::from_slice(group_id);
-    match MlsGroup::load(crypto.storage(), &group_id_obj) {
+    let mls_group_id_bytes = crate::group_map::lookup_mls(provider, nostr_group_id)
+        .map_err(|e| (ErrorCode::StorageFailure, e))?;
+    let group_id_obj = GroupId::from_slice(&mls_group_id_bytes);
+    match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
         Ok(Some(g)) => Ok(g),
         Ok(None) => Err((ErrorCode::UnknownGroupId, "group not in storage".into())),
         Err(e) => Err((ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}"))),
     }
+}
+
+/// Reads the 32-byte Nostr group id out of a freshly-joined MlsGroup
+/// by inspecting its `NostrGroupData` GroupContextExtension (MIP-01,
+/// extension type 0xF2EE). The wire layout of that extension begins
+/// with `uint16 version; opaque nostr_group_id[32]` so we just slice
+/// the first 34 bytes — no full TLS deserialization needed.
+fn extract_nostr_group_id(group: &MlsGroup) -> Result<[u8; 32], String> {
+    use openmls::extensions::{Extension, ExtensionType};
+
+    let target = ExtensionType::Unknown(crate::keypackage::NOSTR_GROUP_DATA_EXTENSION_TYPE);
+    let ext = group
+        .extensions()
+        .iter()
+        .find(|e| e.extension_type() == target)
+        .ok_or_else(|| "joined group has no NostrGroupData extension (0xF2EE) — not a Marmot group?".to_string())?;
+    let body = match ext {
+        Extension::Unknown(_, body) => body,
+        _ => return Err("NostrGroupData extension has unexpected typed variant".to_string()),
+    };
+    if body.0.len() < 34 {
+        return Err(format!(
+            "NostrGroupData extension truncated: expected ≥34 bytes, got {}",
+            body.0.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&body.0[2..34]);
+    Ok(out)
 }
 
 /// Loads the local member's SignatureKeyPair for a given group by
@@ -213,6 +248,13 @@ pub unsafe fn create_group(
         Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("export_secret: {e:?}")),
     };
 
+    // Register (nostr_group_id → mls_group_id) so later FFI ops can
+    // translate. For groups we create the two happen to be equal, but
+    // the mapping has to exist so all lookup paths are uniform.
+    if let Err(e) = crate::group_map::register(provider, &group_id, group.group_id().as_slice()) {
+        return fail(ErrorCode::StorageFailure, e);
+    }
+
     // The signature keys were already persisted in OpenMLS storage by
     // build_member_credential; the group state is persisted by
     // MlsGroup::new_with_group_id. No extra bookkeeping needed.
@@ -273,7 +315,7 @@ pub unsafe fn add_members(
         return fail(ErrorCode::InvalidArgument, "must add at least one member");
     }
 
-    let mut group = match load_group(&provider.crypto, &group_id) {
+    let mut group = match load_group(provider, &group_id) {
         Ok(g) => g,
         Err((c, m)) => return fail(c, m),
     };
@@ -384,7 +426,7 @@ pub unsafe fn remove_members(
         return fail(ErrorCode::InvalidArgument, "must remove at least one member");
     }
 
-    let mut group = match load_group(&provider.crypto, &group_id) {
+    let mut group = match load_group(provider, &group_id) {
         Ok(g) => g,
         Err((c, m)) => return fail(c, m),
     };
@@ -470,7 +512,7 @@ pub unsafe fn self_update(
         Err(msg) => return fail(ErrorCode::NullArgument, msg),
     };
 
-    let mut group = match load_group(&provider.crypto, &group_id) {
+    let mut group = match load_group(provider, &group_id) {
         Ok(g) => g,
         Err((c, m)) => return fail(c, m),
     };
@@ -613,15 +655,23 @@ pub unsafe fn join_from_welcome(
     // The joiner's signature keys were already persisted when their
     // KeyPackage was built. The MlsGroup state has been written to
     // storage by StagedWelcome::into_group. No further bookkeeping needed.
-    let group_id_slice = group.group_id().as_slice();
-    let mut group_id = [0u8; 32];
-    if group_id_slice.len() != 32 {
-        return fail(
-            ErrorCode::InvalidArgument,
-            format!("group_id is not 32 bytes (got {})", group_id_slice.len()),
-        );
+    //
+    // The .NET layer keys conversations by the 32-byte Nostr group id
+    // (the h-tag value). For groups joined from a Welcome, the MLS
+    // GroupId may be a different length (mdk-core / White Noise use
+    // 16 bytes), so we extract the Nostr group id from the
+    // NostrGroupData GroupContextExtension instead of using
+    // group.group_id() directly. The MLS GroupId still drives OpenMLS
+    // lookups; we record the (nostr ↔ mls) mapping for later ops.
+    let nostr_group_id = match extract_nostr_group_id(&group) {
+        Ok(id) => id,
+        Err(msg) => return fail(ErrorCode::InvalidWireFormat, msg),
+    };
+    let mls_group_id_bytes = group.group_id().as_slice().to_vec();
+    if let Err(e) = crate::group_map::register(provider, &nostr_group_id, &mls_group_id_bytes) {
+        return fail(ErrorCode::StorageFailure, e);
     }
-    group_id.copy_from_slice(group_id_slice);
+    let group_id = nostr_group_id;
 
     // Sanity-check that our own-leaf signature keypair is reachable
     // from storage by pubkey — if not, future state changes will fail.
@@ -664,7 +714,7 @@ pub unsafe fn current_exporter(
         Err(msg) => return fail(ErrorCode::NullArgument, msg),
     };
 
-    let group = match load_group(&provider.crypto, &group_id) {
+    let group = match load_group(provider, &group_id) {
         Ok(g) => g,
         Err((c, m)) => return fail(c, m),
     };
