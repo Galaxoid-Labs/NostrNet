@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NostrNet.Marmot.Mls.Reference</RootNamespace>
+    <AssemblyName>NostrNet.Marmot.Mls.Reference</AssemblyName>
+    <Description>EXPERIMENTAL. In-tree, pure-managed MLS (RFC 9420) provider for Marmot. Supports a single ciphersuite (X25519/HKDF-SHA256/AES-128-GCM/Ed25519) and a tightly scoped subset of MLS (founder + single Add + Welcome) sufficient for two-member Marmot groups. NOT audited; not constant-time hardened; does NOT interop with OpenMLS. For production use, prefer an OpenMLS FFI provider.</Description>
+    <PackageTags>nostr;marmot;mls;rfc-9420;hpke;reference;experimental</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NostrNet.Core\NostrNet.Core.csproj" />
+    <ProjectReference Include="..\NostrNet.Crypto\NostrNet.Crypto.csproj" />
+    <ProjectReference Include="..\NostrNet.Marmot\NostrNet.Marmot.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NostrNet.Marmot.Mls.Reference.Tests" />
+  </ItemGroup>
+
+</Project>
