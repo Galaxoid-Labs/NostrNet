@@ -225,7 +225,20 @@ jobs:
       - name: List built packages
         run: ls -lh ./packages
 
-      - name: Create GitHub release
+      # Only create a release when triggered by a tag push.
+      # workflow_dispatch (manual run from main) just produces the
+      # .nupkg files as workflow artifacts for inspection.
+      - name: Upload nupkgs as workflow artifacts (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkgs
+          path: |
+            ./packages/*.nupkg
+            ./packages/*.snupkg
+          if-no-files-found: error
+
+      - name: Create GitHub release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
