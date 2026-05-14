@@ -155,7 +155,6 @@ State persistence:
 | BIP-340 Schnorr | bitcoin/bips test-vectors.csv | embedded resource in Core.Tests |
 | RFC 8439 ChaCha20 | RFC | inline in `ChaCha20Tests.cs` |
 | NIP-44 official | paulmillr/nip44 | embedded resource in Crypto.Tests |
-| NIP-19 / event id interop | Galaxoid Labs Swift Nostr | inline |
 | MLS interop | _(deferred — no cross-impl vectors yet)_ | n/a |
 
 **Rule:** find an interop vector before writing impl. Tests must pass

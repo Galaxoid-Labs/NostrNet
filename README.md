@@ -60,8 +60,8 @@ Group ops supported end-to-end through `NostrNet.Marmot.Mls.Native` (OpenMLS via
 1:1 + N-party conversations, add peer, remove peer, key rotation
 (MLS self-update), application messages, persistent state (SQLite).
 
-Tested against the official BIP-340, BIP-173, RFC 8439, NIP-44, and Galaxoid
-Labs Swift Nostr interop vectors — **525+ tests, zero warnings.**
+Tested against the official BIP-340, BIP-173, RFC 8439, and NIP-44
+interop vectors — **525+ tests, zero warnings.**
 
 ## Install
 
