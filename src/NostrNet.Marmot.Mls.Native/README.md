@@ -58,9 +58,42 @@ for the full API walkthrough including group operations.
 ## Building from source
 
 The Rust crate lives at [`nostrnet-marmot-native/`](https://github.com/Galaxoid-Labs/NostrNet/tree/main/nostrnet-marmot-native).
-A source build of this package requires `cargo` on PATH; the
-`NostrNet.Marmot.Mls.Native.csproj` invokes `cargo build` before the
-.NET build via an MSBuild target.
+A source build of this package requires `cargo` on PATH plus a C
+compiler (used by the `cc` crate to build rusqlite's bundled SQLite).
+See the [main README's Development setup](https://github.com/Galaxoid-Labs/NostrNet#development-setup)
+for per-platform prerequisites.
+
+The `NostrNet.Marmot.Mls.Native.csproj` invokes `cargo build` before
+the .NET build via an MSBuild target, so a normal `dotnet build` from
+the repo root is all you need locally.
+
+### Testing the pack pipeline locally
+
+The `prebuilt/` directory inside this project is gitignored — CI
+populates it during release builds, and you can populate it yourself
+to dry-run the pack:
+
+```sh
+# Build the host's release artifact.
+cd nostrnet-marmot-native
+cargo build --release
+
+# Stage it under the host's RID slot.
+# (Substitute the path/name for your platform: .so on Linux, .dll on Windows.)
+mkdir -p ../src/NostrNet.Marmot.Mls.Native/prebuilt/osx-arm64
+cp target/release/libnostrnet_marmot_native.dylib \
+   ../src/NostrNet.Marmot.Mls.Native/prebuilt/osx-arm64/
+
+# Pack.
+cd ..
+dotnet pack NostrNet.slnx -c Release -o ./local-nupkgs
+
+# Inspect.
+unzip -l local-nupkgs/NostrNet.Marmot.Mls.Native.*.nupkg
+```
+
+The resulting `.nupkg` will ship only the RID you populated. The full
+multi-RID release happens through [`.github/workflows/release.yml`](https://github.com/Galaxoid-Labs/NostrNet/blob/main/.github/workflows/release.yml).
 
 ## Status
 

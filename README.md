@@ -218,14 +218,81 @@ private void OnMined(string idHex) => _label.Text = $"mined: {idHex}";
 (Same `CallDeferred` pattern WPF/WinUI uses with `Dispatcher.Invoke`. See
 the "Threading model" section below for the general rules.)
 
-### Building from source
+### Development setup
+
+NostrNet's pure-managed packages need only the .NET 10 SDK to build.
+`NostrNet.Marmot.Mls.Native` additionally needs the **Rust toolchain**
+and a **C compiler** (the in-tree `nostrnet-marmot-native/` crate
+depends on `rusqlite` with the `bundled` feature, which compiles SQLite
+from C source via the [`cc`](https://crates.io/crates/cc) crate).
+
+**All platforms:**
+
+1. **.NET 10 SDK** — install from <https://dotnet.microsoft.com/download/dotnet/10.0>.
+2. **Rust toolchain** — install rustup:
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+   (On Windows, download `rustup-init.exe` from <https://rustup.rs/>
+   and run it.)
+   rustup installs the stable toolchain and adds `cargo` + `rustc` to
+   your PATH.
+
+**Platform-specific C compiler:**
+
+- **macOS** — install the Xcode Command Line Tools (provides `clang`):
+  ```sh
+  xcode-select --install
+  ```
+  Usually already present if you've done any other development on the
+  machine.
+
+- **Linux (Debian / Ubuntu)** — install `build-essential`:
+  ```sh
+  sudo apt-get update
+  sudo apt-get install -y build-essential
+  ```
+  Other distros: install the equivalent gcc / clang + make package.
+
+- **Windows** — install **Visual Studio 2022** (Community is free) or
+  **Visual Studio Build Tools 2022** with the **"Desktop development
+  with C++"** workload. This gives you `cl.exe` (MSVC), the Windows
+  SDK, and the linker. rustup on Windows defaults to the `msvc`
+  toolchain, which depends on these.
+
+After the prerequisites are in place:
 
 ```sh
-git clone <repo>
+git clone https://github.com/Galaxoid-Labs/NostrNet.git
 cd NostrNet
-dotnet build
-dotnet test
+dotnet build NostrNet.slnx
+dotnet test NostrNet.slnx
 ```
+
+The `NostrNet.Marmot.Mls.Native.csproj` invokes `cargo build` via an
+MSBuild target before the .NET compile; the first run downloads OpenMLS
++ dependencies (a few minutes) and compiles them. Subsequent builds use
+the cargo + .NET incremental caches.
+
+**Editors:**
+
+- **VS Code** — install [C# Dev Kit](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit)
+  + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+- **Visual Studio 2022** — works out of the box once the .NET workload is installed.
+- **JetBrains Rider** — works out of the box.
+
+**Skipping the Native package:** if you don't need MLS support and want
+to avoid the Rust toolchain, unload `src/NostrNet.Marmot.Mls.Native/`
+from the solution (`dotnet sln NostrNet.slnx remove ...`) or work
+directly against the individual csprojs you need (`Core`, `Crypto`,
+`Relay`, `Client`, `Marmot`). All of those build with just `.NET 10`.
+
+**Testing the NuGet pack pipeline locally:** see
+[`src/NostrNet.Marmot.Mls.Native/README.md`](src/NostrNet.Marmot.Mls.Native/README.md)
+— `cargo build --release` then copy the host's binary into
+`src/NostrNet.Marmot.Mls.Native/prebuilt/<rid>/` and run
+`dotnet pack -c Release`. CI (`.github/workflows/release.yml`) handles
+cross-platform packing for tagged releases.
 
 ## Project layout
 

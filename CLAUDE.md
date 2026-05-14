@@ -34,8 +34,13 @@ Single TFM `net10.0`. Central Package Management.
 warnings fail the build. MIT license, Galaxoid Labs.
 
 The Rust crate is required to build `NostrNet.Marmot.Mls.Native` from
-source: `cargo` must be on PATH. CI installs the toolchain via
-`dtolnay/rust-toolchain@stable`. Other projects build without it.
+source: `cargo` must be on PATH, plus a C compiler (rusqlite's
+`bundled` feature compiles SQLite from C source via the `cc` crate —
+macOS: Xcode CLI tools; Linux: build-essential; Windows: VS Build
+Tools 2022 with the C++ workload). CI installs the Rust toolchain via
+`dtolnay/rust-toolchain@stable`; the C compilers are pre-installed on
+the GitHub Actions runners we use. Other shippable projects build
+without either.
 
 ## Locked-in decisions
 
