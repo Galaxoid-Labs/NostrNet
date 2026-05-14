@@ -21,18 +21,24 @@ namespace NostrNet.Marmot.Mls.Native;
 public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
 {
     private readonly ProviderHandle _handle;
+    private readonly string? _path;
     private bool _disposed;
 
     /// <summary>Creates a new OpenMLS-backed provider with in-memory state (lost on dispose).</summary>
     public OpenMlsProvider()
     {
         _handle = ProviderHandle.CreateNew();
+        _path = null;
     }
 
-    private OpenMlsProvider(ProviderHandle handle)
+    private OpenMlsProvider(ProviderHandle handle, string? path)
     {
         _handle = handle;
+        _path = path;
     }
+
+    /// <summary>The filesystem path the provider was opened from, or <c>null</c> for in-memory providers.</summary>
+    public string? Path => _path;
 
     /// <summary>
     /// Opens (or creates) a SQLite-backed provider at <paramref name="path"/>.
@@ -44,7 +50,7 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
     public static OpenMlsProvider OpenAtPath(string path)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
-        return new OpenMlsProvider(ProviderHandle.OpenAtPath(path));
+        return new OpenMlsProvider(ProviderHandle.OpenAtPath(path), path);
     }
 
     /// <summary>Returns the FFI ABI version reported by the native library.</summary>
@@ -625,6 +631,98 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
             uint v = ((uint)buf[cur] << 24) | ((uint)buf[cur + 1] << 16) | ((uint)buf[cur + 2] << 8) | buf[cur + 3];
             cur += 4;
             return v;
+        }
+    }
+
+    /// <inheritdoc/>
+    public unsafe Task DeleteGroupAsync(
+        ReadOnlyMemory<byte> nostrGroupId,
+        CancellationToken ct = default)
+    {
+        if (nostrGroupId.Length != 32)
+        {
+            throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(nostrGroupId));
+        }
+
+        int rc;
+        fixed (byte* gidPin = nostrGroupId.Span)
+        {
+            rc = NativeBindings.DeleteGroup(_handle.DangerousPointer, gidPin);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(DeleteGroupAsync));
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
+    public Task VacuumAsync(CancellationToken ct = default)
+    {
+        int rc = NativeBindings.Vacuum(_handle.DangerousPointer);
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(VacuumAsync));
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Returns a snapshot of state-DB diagnostics: file path, on-disk
+    /// size in bytes (after a VACUUM call would be smaller), and the
+    /// number of groups currently in storage. <see cref="MarmotStateInfo.Path"/>
+    /// is <c>null</c> for in-memory providers, in which case
+    /// <see cref="MarmotStateInfo.SizeOnDiskBytes"/> is 0.
+    /// </summary>
+    public async Task<MarmotStateInfo> StateInfoAsync(CancellationToken ct = default)
+    {
+        long sizeOnDisk = 0;
+        if (_path is not null)
+        {
+            try
+            {
+                sizeOnDisk = new System.IO.FileInfo(_path).Length;
+            }
+            catch (System.IO.FileNotFoundException)
+            {
+                sizeOnDisk = 0;
+            }
+        }
+
+        var groups = await ListGroupsAsync(ct).ConfigureAwait(false);
+        return new MarmotStateInfo(_path, sizeOnDisk, groups.Count);
+    }
+
+    /// <summary>
+    /// Disposes the provider and deletes its SQLite file (including
+    /// the <c>-shm</c> and <c>-wal</c> sidecars). After this call the
+    /// <see cref="OpenMlsProvider"/> instance is unusable; create a
+    /// fresh one if you need to start over.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The provider is in-memory and has no file to delete.</exception>
+    public Task WipeStateAsync(CancellationToken ct = default)
+    {
+        if (_path is null)
+        {
+            throw new InvalidOperationException(
+                "WipeStateAsync requires a file-backed provider; in-memory state is gone on Dispose anyway.");
+        }
+
+        string path = _path;
+        Dispose();
+        TryDeleteFile(path);
+        TryDeleteFile(path + "-shm");
+        TryDeleteFile(path + "-wal");
+        return Task.CompletedTask;
+
+        static void TryDeleteFile(string p)
+        {
+            try { System.IO.File.Delete(p); }
+            catch (System.IO.FileNotFoundException) { }
+            catch (System.IO.DirectoryNotFoundException) { }
         }
     }
 

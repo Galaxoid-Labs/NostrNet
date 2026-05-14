@@ -18,7 +18,7 @@ use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
 use openmls_traits::OpenMlsProvider;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A serde_json-based Codec for the SQLite storage backend.
 #[derive(Default)]
@@ -77,6 +77,9 @@ pub struct Provider {
     /// (one per Provider) — fine, because MLS ops are sub-millisecond
     /// and the contention surface is tiny.
     pub(crate) ffi_lock: std::sync::Mutex<()>,
+    /// Path the provider was opened from, or `None` for in-memory.
+    /// Used by VACUUM to open an exclusive connection for the rewrite.
+    pub(crate) path: Option<PathBuf>,
 }
 
 impl Provider {
@@ -86,7 +89,7 @@ impl Provider {
             Connection::open_in_memory().expect("rusqlite open_in_memory (openmls)");
         let meta_conn =
             rusqlite::Connection::open_in_memory().expect("rusqlite open_in_memory (meta)");
-        Self::open(openmls_conn, meta_conn)
+        Self::open(openmls_conn, meta_conn, None)
     }
 
     /// Open a provider with state persisted at the given filesystem path.
@@ -97,10 +100,14 @@ impl Provider {
             .map_err(|e| format!("open SQLite at {}: {e} (openmls)", path.display()))?;
         let meta_conn = rusqlite::Connection::open(path)
             .map_err(|e| format!("open SQLite at {}: {e} (marmot meta)", path.display()))?;
-        Ok(Self::open(openmls_conn, meta_conn))
+        Ok(Self::open(openmls_conn, meta_conn, Some(path.to_path_buf())))
     }
 
-    fn open(openmls_conn: Connection, meta_conn: rusqlite::Connection) -> Self {
+    fn open(
+        openmls_conn: Connection,
+        meta_conn: rusqlite::Connection,
+        path: Option<PathBuf>,
+    ) -> Self {
         let mut storage = SqliteStorageProvider::<JsonCodec, Connection>::new(openmls_conn);
         storage
             .run_migrations()
@@ -125,6 +132,7 @@ impl Provider {
             },
             marmot_meta: std::sync::Mutex::new(meta_conn),
             ffi_lock: std::sync::Mutex::new(()),
+            path,
         }
     }
 }

@@ -122,6 +122,14 @@ internal static partial class NativeBindings
         IntPtr provider,
         IntPtr* outBlobPtr, nuint* outBlobLen);
 
+    [LibraryImport(Library, EntryPoint = "marmot_delete_group")]
+    public static unsafe partial int DeleteGroup(
+        IntPtr provider,
+        byte* nostrGroupIdPtr);
+
+    [LibraryImport(Library, EntryPoint = "marmot_vacuum")]
+    public static partial int Vacuum(IntPtr provider);
+
     // ────────────────────────────────────────────────────────────
     // Application messages.
     // ────────────────────────────────────────────────────────────

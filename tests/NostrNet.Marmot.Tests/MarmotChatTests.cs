@@ -154,6 +154,14 @@ public class MarmotChatTests
         {
             return Task.FromResult<IReadOnlyList<MarmotStoredGroup>>(Array.Empty<MarmotStoredGroup>());
         }
+
+        public Task DeleteGroupAsync(ReadOnlyMemory<byte> nostrGroupId, CancellationToken ct = default)
+        {
+            _byGroup.Remove(Convert.ToHexStringLower(nostrGroupId.Span));
+            return Task.CompletedTask;
+        }
+
+        public Task VacuumAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 
     [Fact]

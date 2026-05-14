@@ -167,6 +167,24 @@ public interface IMarmotMlsProvider
     /// sessions.
     /// </summary>
     Task<IReadOnlyList<MarmotStoredGroup>> ListGroupsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Delete all local state for the group identified by
+    /// <paramref name="nostrGroupId"/>. This is the local-only
+    /// counterpart of <see cref="BuildSelfRemoveProposalAsync"/> (the
+    /// on-the-wire MLS operation); apps that want to leave a group
+    /// cleanly should publish the SelfRemove first, then call this to
+    /// reclaim local state. Idempotent.
+    /// </summary>
+    Task DeleteGroupAsync(
+        ReadOnlyMemory<byte> nostrGroupId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Run SQLite VACUUM against the underlying state DB to reclaim
+    /// space freed by deletes. No-op for in-memory providers.
+    /// </summary>
+    Task VacuumAsync(CancellationToken ct = default);
 }
 
 /// <summary>A single group present in MLS storage.</summary>
@@ -175,6 +193,15 @@ public interface IMarmotMlsProvider
 public sealed record MarmotStoredGroup(
     byte[] NostrGroupId,
     IReadOnlyList<PublicKey> Members);
+
+/// <summary>Diagnostics snapshot of an MLS state DB.</summary>
+/// <param name="Path">The filesystem path the provider was opened from, or <c>null</c> for in-memory providers.</param>
+/// <param name="SizeOnDiskBytes">On-disk size in bytes (0 for in-memory or when the file doesn't exist yet).</param>
+/// <param name="GroupCount">Number of groups currently in storage.</param>
+public sealed record MarmotStateInfo(
+    string? Path,
+    long SizeOnDiskBytes,
+    int GroupCount);
 
 /// <summary>The serialized bytes and metadata of a KeyPackage bundle.</summary>
 public sealed record KeyPackageBundle(

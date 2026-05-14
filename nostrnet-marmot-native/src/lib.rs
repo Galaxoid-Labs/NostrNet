@@ -137,7 +137,7 @@ pub unsafe extern "C" fn marmot_buffer_free(ptr: *mut u8, len: usize) {
 /// mismatched binaries.
 #[unsafe(no_mangle)]
 pub extern "C" fn marmot_abi_version() -> u32 {
-    3
+    4
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -246,6 +246,31 @@ pub unsafe extern "C" fn marmot_create_group(
             out_exporter_len,
         )
     }
+}
+
+/// Delete local state for a single group. See `group::delete_group`.
+///
+/// # Safety
+/// Standard FFI safety. `nostr_group_id_ptr` must point at 32 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_delete_group(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+) -> i32 {
+    errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
+    unsafe { group::delete_group(provider, nostr_group_id_ptr) }
+}
+
+/// Run SQLite VACUUM to reclaim freed pages. See `group::vacuum`.
+///
+/// # Safety
+/// Standard FFI safety.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_vacuum(provider: *mut Provider) -> i32 {
+    errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
+    unsafe { group::vacuum(provider) }
 }
 
 /// Enumerate every group currently in storage.

@@ -61,6 +61,83 @@ fn extract_nostr_group_id(group: &MlsGroup) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
+/// Delete all local state for a single group identified by the
+/// 32-byte Nostr group id: drops the OpenMLS group state from
+/// storage and removes the corresponding row from
+/// `marmot_group_map`. Idempotent — deleting a nonexistent group is
+/// a no-op.
+///
+/// This is the local-state counterpart of `BuildSelfRemoveProposal`,
+/// which is the on-the-wire MLS operation. Apps that want to leave
+/// a group cleanly should publish the SelfRemove first, then call
+/// `delete_group` to clean up local state.
+pub unsafe fn delete_group(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+) -> i32 {
+    use openmls_traits::storage::StorageProvider;
+
+    if provider.is_null() {
+        return fail(ErrorCode::NullArgument, "provider handle is null");
+    }
+    let provider = unsafe { &*provider };
+
+    let nostr_group_id = match unsafe { read_group_id(nostr_group_id_ptr) } {
+        Ok(g) => g,
+        Err(msg) => return fail(ErrorCode::NullArgument, msg),
+    };
+
+    let mls_bytes = match crate::group_map::lookup_mls(provider, &nostr_group_id) {
+        Ok(b) => b,
+        Err(e) => return fail(ErrorCode::StorageFailure, e),
+    };
+
+    let mls_id = GroupId::from_slice(&mls_bytes);
+    // OpenMLS 0.8 spells it `delete_group_state`. There's also
+    // `clear_proposal_queue` and similar finer-grained methods but
+    // `delete_group_state` wipes the whole group's stored state.
+    if let Err(e) = provider.crypto.storage().delete_group_state(&mls_id) {
+        return fail(
+            ErrorCode::StorageFailure,
+            format!("storage().delete_group_state: {e:?}"),
+        );
+    }
+
+    if let Err(e) = crate::group_map::forget(provider, &nostr_group_id) {
+        return fail(ErrorCode::StorageFailure, e);
+    }
+
+    ErrorCode::Success as i32
+}
+
+/// Run SQLite VACUUM on the underlying database file to reclaim
+/// space previously freed by deletes. No-op for in-memory providers
+/// (no file to compact). Opens a one-shot rusqlite connection for
+/// the rewrite so it doesn't block on either of the long-lived
+/// provider connections.
+pub unsafe fn vacuum(provider: *mut Provider) -> i32 {
+    if provider.is_null() {
+        return fail(ErrorCode::NullArgument, "provider handle is null");
+    }
+    let provider = unsafe { &*provider };
+
+    let path = match provider.path.as_ref() {
+        Some(p) => p,
+        None => return ErrorCode::Success as i32,
+    };
+
+    let conn = match rusqlite::Connection::open(path) {
+        Ok(c) => c,
+        Err(e) => return fail(ErrorCode::StorageFailure, format!("open for vacuum: {e}")),
+    };
+
+    if let Err(e) = conn.execute("VACUUM", []) {
+        return fail(ErrorCode::StorageFailure, format!("VACUUM: {e}"));
+    }
+
+    ErrorCode::Success as i32
+}
+
 /// Enumerate every group present in storage. For each group, emit
 /// its 32-byte Nostr group id and the per-member identity blob
 /// (currently 32 bytes per member; BasicCredential identities are
