@@ -27,6 +27,7 @@ mod buffer;
 mod errors;
 mod group;
 mod keypackage;
+mod messages;
 mod provider;
 
 use std::ffi::c_char;
@@ -35,6 +36,7 @@ pub use buffer::*;
 pub use errors::*;
 pub use group::*;
 pub use keypackage::*;
+pub use messages::*;
 pub use provider::*;
 
 // ──────────────────────────────────────────────────────────────────────
@@ -279,6 +281,67 @@ pub unsafe extern "C" fn marmot_current_exporter(
             nostr_group_id_ptr,
             out_exporter_ptr,
             out_exporter_len,
+        )
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Application messages.
+// ──────────────────────────────────────────────────────────────────────
+
+/// # Safety
+/// See `messages::encrypt_application_message`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_encrypt_application_message(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+    plaintext_ptr: *const u8,
+    plaintext_len: usize,
+    out_msg_ptr: *mut *mut u8,
+    out_msg_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        messages::encrypt_application_message(
+            provider,
+            nostr_group_id_ptr,
+            plaintext_ptr,
+            plaintext_len,
+            out_msg_ptr,
+            out_msg_len,
+        )
+    }
+}
+
+/// # Safety
+/// See `messages::process_incoming_message`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn marmot_process_incoming_message(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+    msg_ptr: *const u8,
+    msg_len: usize,
+    out_kind: *mut i32,
+    out_payload_ptr: *mut *mut u8,
+    out_payload_len: *mut usize,
+    out_epoch_advanced: *mut u8,
+    out_new_exporter_ptr: *mut *mut u8,
+    out_new_exporter_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        messages::process_incoming_message(
+            provider,
+            nostr_group_id_ptr,
+            msg_ptr,
+            msg_len,
+            out_kind,
+            out_payload_ptr,
+            out_payload_len,
+            out_epoch_advanced,
+            out_new_exporter_ptr,
+            out_new_exporter_len,
         )
     }
 }

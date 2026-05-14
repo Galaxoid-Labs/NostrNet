@@ -97,4 +97,25 @@ internal static partial class NativeBindings
         IntPtr provider,
         byte* nostrGroupIdPtr,
         IntPtr* outExporterPtr, nuint* outExporterLen);
+
+    // ────────────────────────────────────────────────────────────
+    // Application messages.
+    // ────────────────────────────────────────────────────────────
+
+    [LibraryImport(Library, EntryPoint = "marmot_encrypt_application_message")]
+    public static unsafe partial int EncryptApplicationMessage(
+        IntPtr provider,
+        byte* nostrGroupIdPtr,
+        byte* plaintextPtr, nuint plaintextLen,
+        IntPtr* outMsgPtr, nuint* outMsgLen);
+
+    [LibraryImport(Library, EntryPoint = "marmot_process_incoming_message")]
+    public static unsafe partial int ProcessIncomingMessage(
+        IntPtr provider,
+        byte* nostrGroupIdPtr,
+        byte* msgPtr, nuint msgLen,
+        int* outKind,
+        IntPtr* outPayloadPtr, nuint* outPayloadLen,
+        byte* outEpochAdvanced,
+        IntPtr* outNewExporterPtr, nuint* outNewExporterLen);
 }

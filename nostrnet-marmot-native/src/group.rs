@@ -20,6 +20,12 @@ const EXPORTER_CONTEXT: &[u8] = b"group-event";
 const EXPORTER_LENGTH: usize = 32;
 
 /// Reads the 32-byte nostr_group_id out of a raw pointer. Returns
+/// an error string on null. Exported for use by the messages module.
+pub(crate) unsafe fn read_group_id_safe(ptr: *const u8) -> Result<[u8; 32], &'static str> {
+    unsafe { read_group_id(ptr) }
+}
+
+/// Reads the 32-byte nostr_group_id out of a raw pointer. Returns
 /// an error string on null.
 unsafe fn read_group_id(ptr: *const u8) -> Result<[u8; 32], &'static str> {
     if ptr.is_null() {

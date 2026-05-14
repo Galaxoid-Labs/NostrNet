@@ -291,18 +291,91 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
         => throw new NotImplementedException("BuildSelfRemoveProposalAsync lands in the next FFI iteration.");
 
     /// <inheritdoc/>
-    public Task<byte[]> EncryptApplicationMessageAsync(
+    public unsafe Task<byte[]> EncryptApplicationMessageAsync(
         ReadOnlyMemory<byte> nostrGroupId,
         ReadOnlyMemory<byte> plaintext,
         CancellationToken ct = default)
-        => throw new NotImplementedException("EncryptApplicationMessageAsync lands in the next FFI iteration.");
+    {
+        if (nostrGroupId.Length != 32)
+        {
+            throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(nostrGroupId));
+        }
+
+        IntPtr msgPtr = IntPtr.Zero;
+        nuint msgLen = 0;
+        int rc;
+        fixed (byte* gidPin = nostrGroupId.Span)
+        fixed (byte* ptPin = plaintext.Span)
+        {
+            rc = NativeBindings.EncryptApplicationMessage(
+                _handle.DangerousPointer,
+                gidPin,
+                ptPin, (nuint)plaintext.Length,
+                &msgPtr, &msgLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(EncryptApplicationMessageAsync));
+        }
+
+        return Task.FromResult(FfiBuffer.CopyAndFree(msgPtr, msgLen));
+    }
 
     /// <inheritdoc/>
-    public Task<ProcessedMlsMessage> ProcessIncomingMlsMessageAsync(
+    public unsafe Task<ProcessedMlsMessage> ProcessIncomingMlsMessageAsync(
         ReadOnlyMemory<byte> nostrGroupId,
         ReadOnlyMemory<byte> mlsMessageBytes,
         CancellationToken ct = default)
-        => throw new NotImplementedException("ProcessIncomingMlsMessageAsync lands in the next FFI iteration.");
+    {
+        if (nostrGroupId.Length != 32)
+        {
+            throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(nostrGroupId));
+        }
+
+        int kind = 0;
+        IntPtr payloadPtr = IntPtr.Zero;
+        nuint payloadLen = 0;
+        byte epochAdvanced = 0;
+        IntPtr newExpPtr = IntPtr.Zero;
+        nuint newExpLen = 0;
+
+        int rc;
+        fixed (byte* gidPin = nostrGroupId.Span)
+        fixed (byte* msgPin = mlsMessageBytes.Span)
+        {
+            rc = NativeBindings.ProcessIncomingMessage(
+                _handle.DangerousPointer,
+                gidPin,
+                msgPin, (nuint)mlsMessageBytes.Length,
+                &kind,
+                &payloadPtr, &payloadLen,
+                &epochAdvanced,
+                &newExpPtr, &newExpLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(ProcessIncomingMlsMessageAsync));
+        }
+
+        byte[] payload = FfiBuffer.CopyAndFree(payloadPtr, payloadLen);
+        byte[]? newExporter = epochAdvanced != 0 ? FfiBuffer.CopyAndFree(newExpPtr, newExpLen) : null;
+
+        var mlsKind = kind switch
+        {
+            0 => MlsMessageKind.Application,
+            1 => MlsMessageKind.Proposal,
+            2 => MlsMessageKind.Commit,
+            _ => throw new InvalidDataException($"unknown MLS message kind {kind}"),
+        };
+
+        return Task.FromResult(new ProcessedMlsMessage(
+            Kind: mlsKind,
+            ApplicationPayload: payload,
+            EpochAdvanced: epochAdvanced != 0,
+            NewExporterSecret: newExporter));
+    }
 
     /// <inheritdoc/>
     public unsafe Task<byte[]> CurrentExporterSecretAsync(
