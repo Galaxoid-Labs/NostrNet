@@ -27,7 +27,52 @@ To actually run Marmot, pair this package with an MLS provider:
 MIPs 04 (encrypted media) and 05 (push notification rumor, kind 446) are
 optional and not yet implemented.
 
-## Quickstart
+## Quickstart — high-level 1:1 helper
+
+For one-to-one conversations (DMs / private chats), the `MarmotChat`
+static helpers collapse the provider + envelope + NIP-59 plumbing into
+five async calls:
+
+```csharp
+using NostrNet.Marmot;
+using NostrNet.Marmot.Mls.Reference;  // or your preferred provider
+using NostrNet.Keys;
+
+#pragma warning disable NMARMOT0001    // see Mls.Reference experimental note
+IMarmotMlsProvider provider = new ReferenceMarmotMlsProvider();
+#pragma warning restore NMARMOT0001
+
+using var myKey = PrivateKey.Generate();
+var myRelays = new[] { "wss://relay.example" };
+
+// 1. Publish a KeyPackage so others can start a conversation with you.
+var myKeyPackage = await MarmotChat.BuildKeyPackageEventAsync(
+    provider, myKey, slot: "default", myRelays);
+// publish myKeyPackage (kind 30443) to your inbox relays...
+
+// 2. Start a 1:1 conversation with a peer whose KeyPackage event you've fetched.
+var started = await MarmotChat.StartConversationAsync(
+    provider, myKey, peerKeyPackageEvent, conversationName: "Alice <> Bob", myRelays);
+// publish started.WelcomeGiftWrap (kind 1059) to the peer's inbox...
+
+// 3. Accept an inbound invite by trying to unwrap every kind-1059 you receive.
+var convo = await MarmotChat.TryAcceptInviteAsync(provider, myKey, inboundGiftWrap);
+if (convo is not null) { /* joined */ }
+
+// 4. Send a message.
+var ev = await MarmotChat.EncryptMessageAsync(provider, convo, "hello!");
+// publish ev (kind 445) to the conversation's relays...
+
+// 5. Decrypt an inbound kind-445.
+string? text = await MarmotChat.TryDecryptMessageAsync(provider, convo, inboundEvent);
+```
+
+Bidirectional and replay-protected: both sides run their own outbound
+ratchet (keyed for their leaf) and track the peer's inbound generation
+independently. See `samples/NostrNet.Sample.Console` for an end-to-end
+demo (`marmot-mls-smoke` subcommand).
+
+## Low-level flow
 
 The flow always has the same shape regardless of MLS provider:
 

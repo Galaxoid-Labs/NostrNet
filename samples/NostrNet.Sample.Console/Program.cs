@@ -27,8 +27,7 @@
 using NostrNet.Client;
 using NostrNet.Events;
 using NostrNet.Keys;
-using NostrNet.Marmot.Events;
-using NostrNet.Marmot.GroupData;
+using NostrNet.Marmot;
 using NostrNet.Marmot.Mls.Reference;
 using NostrNet.Relay;
 
@@ -370,73 +369,48 @@ void PrintUsage()
     Console.Error.WriteLine("  marmot-mls-smoke                     experimental: in-tree MLS two-member round-trip smoke test");
 }
 
-// Drives the full Marmot + reference-MLS flow end-to-end without touching
-// the network. Useful both as a demo and as the AOT-publish smoke test
-// for the BouncyCastle-backed MLS reference provider.
+// Drives the full Marmot + reference-MLS 1:1 chat flow end-to-end without
+// touching the network. Useful both as a demo of the MarmotChat helper
+// and as the AOT-publish smoke test for the BouncyCastle-backed MLS
+// reference provider.
 async Task<int> MarmotMlsSmokeAsync()
 {
     using var aliceKey = PrivateKey.Generate();
     using var bobKey = PrivateKey.Generate();
 
-    var aliceProvider = new ReferenceMarmotMlsProvider();
-    var bobProvider = new ReferenceMarmotMlsProvider();
+    var aliceProv = new ReferenceMarmotMlsProvider();
+    var bobProv = new ReferenceMarmotMlsProvider();
+    var relays = new[] { "wss://relay.example" };
 
-    // Bob: build a KeyPackage and self-publish it as a kind-30443 event.
-    var bobBundle = await bobProvider.BuildKeyPackageAsync(
-        identityPubkey: bobKey.PublicKey,
-        ciphersuite: 0x0001,
-        extensions: new ushort[] { 0xF2EE },
-        proposals: Array.Empty<ushort>());
+    // Bob publishes his KeyPackage event (kind-30443). In a real app this
+    // would be sent to his inbox relays.
+    var bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(
+        bobProv, bobKey, slot: "default", relays);
 
-    var bobKpEvent = KeyPackageEvent.Create("smoke-slot")
-        .WithBundleBytes(bobBundle.BundleBytes)
-        .WithCiphersuite(bobBundle.Ciphersuite)
-        .WithExtension(0xF2EE)
-        .WithKeyPackageRef(bobBundle.KeyPackageRef!)
-        .WithRelay("wss://relay.example")
-        .Sign(bobKey);
+    // Alice fetches Bob's KeyPackage off a relay (skipped here) and starts
+    // a conversation. She gets a kind-1059 gift wrap to publish to Bob.
+    var started = await MarmotChat.StartConversationAsync(
+        aliceProv, aliceKey, bobKpEvent, "Alice <> Bob", relays);
 
-    // Alice: create group, add Bob, get Welcome.
-    byte[] groupId = new byte[32];
-    System.Security.Cryptography.RandomNumberGenerator.Fill(groupId);
-    var groupData = new MarmotGroupDataExtension
+    // Bob's app subscribes to kind-1059 gift wraps addressed to him, and
+    // tries to accept each as a Marmot invite.
+    var bobConvo = await MarmotChat.TryAcceptInviteAsync(bobProv, bobKey, started.WelcomeGiftWrap);
+    if (bobConvo is null)
     {
-        NostrGroupId = groupId,
-        Name = "Smoke Test",
-        AdminPubkeys = new[] { aliceKey.PublicKey },
-        Relays = new[] { "wss://relay.example" },
-    };
-    await aliceProvider.CreateGroupAsync(aliceKey.PublicKey, groupData, ciphersuite: 0x0001);
-    var addResult = await aliceProvider.AddMembersAsync(
-        groupId,
-        new ReadOnlyMemory<byte>[] { bobBundle.BundleBytes });
+        Console.Error.WriteLine("✗ bob failed to accept invite");
+        return 1;
+    }
 
-    // Alice: wrap Welcome in NIP-59 gift wrap and "send" to Bob.
-    var giftWrap = WelcomeEvent.Build(
-        mlsWelcomeBytes: addResult.Welcomes[0].WelcomeMlsMessageBytes,
-        keyPackageEventId: bobKpEvent.Id.ToHex(),
-        senderKey: aliceKey,
-        recipientPubkey: bobKey.PublicKey,
-        recommendedRelays: groupData.Relays.ToList());
+    // Bidirectional ping-pong over the channel.
+    var aliceToBob = await MarmotChat.EncryptMessageAsync(aliceProv, started.Conversation, "hello bob");
+    string? gotByBob = await MarmotChat.TryDecryptMessageAsync(bobProv, bobConvo, aliceToBob);
+    Console.WriteLine($"alice → bob: {gotByBob}");
 
-    // Bob: unwrap and join.
-    var unwrapped = WelcomeEvent.Unwrap(giftWrap, bobKey);
-    await bobProvider.JoinGroupFromWelcomeAsync(unwrapped.MlsWelcomeBytes);
+    var bobToAlice = await MarmotChat.EncryptMessageAsync(bobProv, bobConvo, "hi alice");
+    string? gotByAlice = await MarmotChat.TryDecryptMessageAsync(aliceProv, started.Conversation, bobToAlice);
+    Console.WriteLine($"bob   → alice: {gotByAlice}");
 
-    byte[] aliceExp = await aliceProvider.CurrentExporterSecretAsync(groupId);
-    byte[] bobExp = await bobProvider.CurrentExporterSecretAsync(groupId);
-
-    bool match = aliceExp.AsSpan().SequenceEqual(bobExp);
-    Console.WriteLine($"alice exporter: {Convert.ToHexString(aliceExp).ToLowerInvariant()}");
-    Console.WriteLine($"bob   exporter: {Convert.ToHexString(bobExp).ToLowerInvariant()}");
-    Console.WriteLine(match ? "✓ exporter secrets match — group works" : "✗ exporter mismatch");
-
-    // Round-trip a kind-445 GroupEvent.
-    byte[] message = System.Text.Encoding.UTF8.GetBytes("hello from the AOT smoke test");
-    var groupEvent = GroupEvent.Build(message, aliceExp, groupId);
-    var decrypted = GroupEvent.Decrypt(groupEvent, bobExp);
-    bool roundTrip = decrypted.MlsMessageBytes.AsSpan().SequenceEqual(message);
-    Console.WriteLine(roundTrip ? "✓ kind-445 GroupEvent round-trip OK" : "✗ kind-445 GroupEvent round-trip FAILED");
-
-    return match && roundTrip ? 0 : 1;
+    bool ok = gotByBob == "hello bob" && gotByAlice == "hi alice";
+    Console.WriteLine(ok ? "✓ 1:1 marmot round-trip OK" : "✗ 1:1 marmot round-trip FAILED");
+    return ok ? 0 : 1;
 }

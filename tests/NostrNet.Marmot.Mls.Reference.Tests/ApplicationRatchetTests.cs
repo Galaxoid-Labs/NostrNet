@@ -134,6 +134,60 @@ public class ApplicationRatchetTests
     }
 
     [Fact]
+    public async Task Bidirectional_AliceAndBob_BothDirections()
+    {
+        // 1:1 messaging means BOTH sides talk. Each side runs its own
+        // outbound ratchet (leaf 0 for Alice, leaf 1 for Bob) and tracks
+        // the peer's inbound ratchet independently.
+        var g = await BuildTwoMemberGroupAsync();
+
+        // Alice → Bob
+        byte[] aliceMsg = SysEncoding.UTF8.GetBytes("hello from alice");
+        byte[] aliceCipher = await g.AliceProvider.EncryptApplicationMessageAsync(g.GroupId, aliceMsg);
+        var bobGot = await g.BobProvider.ProcessIncomingMlsMessageAsync(g.GroupId, aliceCipher);
+        Assert.Equal(aliceMsg, bobGot.ApplicationPayload);
+
+        // Bob → Alice
+        byte[] bobMsg = SysEncoding.UTF8.GetBytes("hi alice, this is bob");
+        byte[] bobCipher = await g.BobProvider.EncryptApplicationMessageAsync(g.GroupId, bobMsg);
+        var aliceGot = await g.AliceProvider.ProcessIncomingMlsMessageAsync(g.GroupId, bobCipher);
+        Assert.Equal(bobMsg, aliceGot.ApplicationPayload);
+
+        // Several more rounds, interleaved, to be sure neither side's
+        // ratchets cross-pollute.
+        for (int i = 0; i < 5; i++)
+        {
+            byte[] a = SysEncoding.UTF8.GetBytes($"A{i}");
+            byte[] b = SysEncoding.UTF8.GetBytes($"B{i}");
+
+            byte[] aCt = await g.AliceProvider.EncryptApplicationMessageAsync(g.GroupId, a);
+            byte[] bCt = await g.BobProvider.EncryptApplicationMessageAsync(g.GroupId, b);
+
+            var aGotB = await g.AliceProvider.ProcessIncomingMlsMessageAsync(g.GroupId, bCt);
+            var bGotA = await g.BobProvider.ProcessIncomingMlsMessageAsync(g.GroupId, aCt);
+
+            Assert.Equal(b, aGotB.ApplicationPayload);
+            Assert.Equal(a, bGotA.ApplicationPayload);
+        }
+    }
+
+    [Fact]
+    public async Task Bidirectional_SenderCantDecryptOwnMessages()
+    {
+        // The MLS ratchet binds messages to a SENDER leaf. Alice
+        // encrypting with her outbound ratchet (leaf 0) cannot be
+        // decrypted by Alice's inbound ratchet (which is keyed for
+        // leaf 1's outbound). Self-decrypt MUST fail.
+        var g = await BuildTwoMemberGroupAsync();
+
+        byte[] msg = SysEncoding.UTF8.GetBytes("alice's own message");
+        byte[] ciphertext = await g.AliceProvider.EncryptApplicationMessageAsync(g.GroupId, msg);
+
+        await Assert.ThrowsAnyAsync<CryptographicException>(
+            async () => await g.AliceProvider.ProcessIncomingMlsMessageAsync(g.GroupId, ciphertext));
+    }
+
+    [Fact]
     public async Task GroupEvent_WrapsRatchetedMessage_EndToEnd()
     {
         // The fully Marmot-compliant path: MLS app message INSIDE a kind-445
