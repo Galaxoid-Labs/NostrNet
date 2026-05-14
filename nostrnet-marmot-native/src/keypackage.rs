@@ -124,10 +124,14 @@ fn build_keypackage_inner(
 
     let kp = key_package_bundle.key_package();
 
-    let mls_message: MlsMessageOut = kp.clone().into();
-    let bundle_bytes = mls_message
+    // Per Marmot MIP-00, the kind-30443 content is the TLS-serialized
+    // KeyPackage itself (base64-encoded by the caller), NOT an MLSMessage
+    // wrapping. This matches the canonical mdk-core implementation that
+    // White Noise (and every other Marmot client) uses, so KeyPackages
+    // round-trip across implementations.
+    let bundle_bytes = kp
         .tls_serialize_detached()
-        .map_err(|e| (ErrorCode::SerializationFailure, format!("serialize MLSMessage(KeyPackage): {e:?}")))?;
+        .map_err(|e| (ErrorCode::SerializationFailure, format!("serialize KeyPackage: {e:?}")))?;
 
     let kp_ref = kp
         .hash_ref(provider.crypto())
@@ -160,22 +164,14 @@ pub unsafe fn parse_keypackage(
     }
 
     let mut cursor = bytes;
-    let mls_message = match MlsMessageIn::tls_deserialize(&mut cursor) {
-        Ok(m) => m,
-        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize MLSMessage: {e:?}")),
+    // Per Marmot MIP-00 the wire form is the raw KeyPackage (matching
+    // mdk-core / White Noise), not an MLSMessage(KeyPackage) frame.
+    let kp = match KeyPackageIn::tls_deserialize(&mut cursor) {
+        Ok(kp) => kp,
+        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize KeyPackage: {e:?}")),
     };
 
-    let kp = match mls_message.extract() {
-        MlsMessageBodyIn::KeyPackage(kp) => kp,
-        other => {
-            return fail(
-                ErrorCode::InvalidWireFormat,
-                format!("expected MLSMessage(KeyPackage); got {:?}", std::mem::discriminant(&other)),
-            );
-        }
-    };
-
-    // OpenMLS handed us a KeyPackageIn — verify and convert to KeyPackage.
+    // Verify the KeyPackage and convert KeyPackageIn → KeyPackage.
     let backend = OpenMlsRustCrypto::default();
     let kp = match kp.validate(backend.crypto(), ProtocolVersion::Mls10) {
         Ok(kp) => kp,

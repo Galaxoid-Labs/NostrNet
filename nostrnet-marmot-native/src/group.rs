@@ -483,12 +483,10 @@ fn decode_keypackage_blob(
         cursor += len;
 
         let mut c = kp_bytes;
-        let kp_message = MlsMessageIn::tls_deserialize(&mut c)
-            .map_err(|e| (ErrorCode::SerializationFailure, format!("deserialize MLSMessage(KeyPackage) #{i}: {e:?}")))?;
-        let kp_in = match kp_message.extract() {
-            MlsMessageBodyIn::KeyPackage(k) => k,
-            _ => return Err((ErrorCode::InvalidWireFormat, format!("entry {i} is not MLSMessage(KeyPackage)"))),
-        };
+        // Marmot MIP-00: wire form is a raw KeyPackage (matches mdk-core /
+        // White Noise), not an MLSMessage(KeyPackage) frame.
+        let kp_in = KeyPackageIn::tls_deserialize(&mut c)
+            .map_err(|e| (ErrorCode::SerializationFailure, format!("deserialize KeyPackage #{i}: {e:?}")))?;
         let kp = kp_in
             .validate(crypto.crypto(), ProtocolVersion::Mls10)
             .map_err(|e| (ErrorCode::CryptoFailure, format!("KeyPackage #{i} validation: {e:?}")))?;
