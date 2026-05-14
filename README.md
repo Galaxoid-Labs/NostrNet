@@ -78,8 +78,23 @@ reference. Bidirectional 1:1 chat — KeyPackage publish, Welcome,
 add/remove, send/receive of kind-9 chat rumors — works against
 production Marmot clients.
 
+### Blossom (content-addressed media)
+
+[Blossom](https://github.com/hzrd149/blossom) support lives in
+`NostrNet.Blossom`. See
+[`src/NostrNet.Blossom/README.md`](src/NostrNet.Blossom/README.md)
+for the full API walkthrough. Highlights:
+
+| Layer | API |
+|---|---|
+| High-level façade | `BlossomMediaClient.Builder(key).UseServers(...).Build()` — upload (with mirror), download, list, delete, NIP-B7 publish, all in one |
+| Multi-server resolver | `BlossomResolver` walks BUD-03 / BUD-10 candidate order (server hints → author server lists → fallbacks) |
+| Per-server HTTP client | `BlossomClient` covers every BUD-01/02/04/05/06/09/12 endpoint plus typed 402 surface (BUD-07) |
+| Auth tokens | `BlossomAuthToken.Create(verb, reason).ScopeToBlob(sha).BuildAndSign(key)` → base64url-encoded `Authorization: Nostr …` (BUD-11) |
+| URI scheme | `BlossomUri.Parse("blossom:…")` and round-trip (BUD-10) |
+
 Tested against the official BIP-340, BIP-173, RFC 8439, and NIP-44
-interop vectors — **540+ tests, zero warnings.**
+interop vectors — **640+ tests, zero warnings.**
 
 ## Install
 
