@@ -47,8 +47,12 @@ using var myKey = PrivateKey.Generate();
 var myRelays = new[] { "wss://relay.example" };
 
 // 1. Publish a KeyPackage so others can start a conversation with you.
+//    Pass slot: null to auto-generate a deterministic 64-char hex
+//    derived from your pubkey — re-publishing replaces the previous
+//    KeyPackage event on relays. Pass an explicit 64-hex string for a
+//    separate "device slot".
 var myKeyPackage = await MarmotChat.BuildKeyPackageEventAsync(
-    provider, myKey, slot: "default", myRelays);
+    provider, myKey, slot: null, myRelays);
 // publish myKeyPackage (kind 30443) to your inbox relays...
 
 // 2. Start a 1:1 conversation with a peer whose KeyPackage event you've fetched.
@@ -60,18 +64,25 @@ var started = await MarmotChat.StartConversationAsync(
 var convo = await MarmotChat.TryAcceptInviteAsync(provider, myKey, inboundGiftWrap);
 if (convo is not null) { /* joined */ }
 
-// 4. Send a message.
-var ev = await MarmotChat.EncryptMessageAsync(provider, convo, "hello!");
+// 4. Send a message. Per Marmot MIP-03 the plaintext fed to MLS is a
+//    JSON-serialized unsigned Nostr rumor (kind 9); EncryptMessageAsync
+//    builds the rumor for you, so you pass the user's text + your
+//    PrivateKey (used as the rumor's pubkey).
+var ev = await MarmotChat.EncryptMessageAsync(provider, convo, myKey, "hello!");
 // publish ev (kind 445) to the conversation's relays...
 
-// 5. Decrypt an inbound kind-445.
+// 5. Decrypt an inbound kind-445. TryDecryptMessageAsync transparently
+//    unwraps the rumor and returns the chat text from its content field.
 string? text = await MarmotChat.TryDecryptMessageAsync(provider, convo, inboundEvent);
 ```
 
 Bidirectional and replay-protected: both sides run their own outbound
 ratchet (keyed for their leaf) and track the peer's inbound generation
 independently. See `samples/NostrNet.Sample.Console` for an end-to-end
-demo (`marmot-mls-smoke` subcommand).
+demo (`marmot-mls-smoke` subcommand) and the `marmot-chat` interactive
+REPL for talking to real Marmot clients (e.g.
+[White Noise](https://github.com/marmot-protocol/whitenoise-rs)) over
+live relays.
 
 ### Multi-member groups
 
@@ -155,6 +166,61 @@ using var provider2 = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite");
 // exporter secrets are immediately available.
 ```
 
+### Resuming conversations on startup
+
+`ListGroupsAsync` enumerates every group the provider has in storage
+(MLS group state + members). `NostrMarmotClient` builds on this with
+`LoadExistingConversationsAsync`, which converts each into a
+`MarmotConversation`, derives the 1:1 peer when unambiguous, and
+starts kind-445 subscriptions automatically:
+
+```csharp
+await using var client = await NostrMarmotClient.Builder(myKey, provider)
+    .UseRelays("wss://relay.example")
+    .ConnectAsync();
+
+// Restore prior conversations before subscribing for new traffic.
+foreach (var c in await client.LoadExistingConversationsAsync())
+{
+    Console.WriteLine($"resumed group {Convert.ToHexStringLower(c.NostrGroupId)} (peer: {c.Peer?.ToNpub()})");
+}
+
+// Then start the inbound pump as normal.
+await foreach (var ev in client.SubscribeAsync(ct)) { /* ... */ }
+```
+
+`MarmotConversation.Peer` is nullable: for multi-member groups or
+conversations rehydrated from storage where the 1:1 peer is
+ambiguous, it's `null`. Use the `MarmotStoredGroup.Members` list
+returned by `ListGroupsAsync` if you need the full membership.
+
+### State-DB management
+
+| Helper | What it does |
+|---|---|
+| `IMarmotMlsProvider.DeleteGroupAsync(nostrGroupId)` | Removes a single group's MLS state + the `marmot_group_map` row. Idempotent. Local-only — call `BuildSelfRemoveProposalAsync` first to announce the leave on the wire. |
+| `IMarmotMlsProvider.VacuumAsync()` | Runs SQLite VACUUM to reclaim space after deletes. No-op for in-memory providers. |
+| `OpenMlsProvider.StateInfoAsync()` | Returns `MarmotStateInfo(Path, SizeOnDiskBytes, GroupCount)` for diagnostics. |
+| `OpenMlsProvider.WipeStateAsync()` | Disposes the provider and deletes the `.db` + `-shm` + `-wal` sidecars. Throws on in-memory. Standard "sign out / reset" flow. |
+
+### Acceptance semantics
+
+`NostrMarmotClient.AcceptInviteAsync` returns `MarmotConversation?`.
+It returns `null` (no exception) on the two expected-stale outcomes
+common in long-lived inboxes:
+
+- **`NoMatchingKeyPackage`** — the Welcome targets a local
+  KeyPackage that has since rotated away (e.g., the state DB was
+  wiped between when the inviter cached our KP and when their
+  Welcome was delivered).
+- **`GroupAlreadyExists`** — the same Welcome was redelivered by a
+  second relay; we've already joined the group locally. The library
+  scans `ListGroupsAsync` for the inviter and returns the existing
+  conversation.
+
+Apps should treat `null` as "skip silently" rather than as an
+error to surface, the way the `marmot-chat` sample does.
+
 ## Low-level flow
 
 The flow always has the same shape regardless of MLS provider:
@@ -236,14 +302,20 @@ keyed by the 32-byte `nostr_group_id`.
 | `CreateGroupAsync` | Bootstrap a new MLS group with the Marmot Group Data extension |
 | `AddMembersAsync` | Issue Add proposals + Commit; produces a Welcome blob per recipient |
 | `JoinGroupFromWelcomeAsync` | Process an inbound Welcome to join a group |
+| `RemoveMembersAsync` | Issue Remove proposals + Commit for the named members |
+| `SelfUpdateAsync` | Rotate the local member's leaf keys |
 | `BuildSelfRemoveProposalAsync` | Issue a SelfRemove proposal for the local member |
 | `EncryptApplicationMessageAsync` | Encrypt an application MLSMessage to publish as kind-445 content |
 | `ProcessIncomingMlsMessageAsync` | Process any inbound MLSMessage (proposal/commit/application) |
 | `CurrentExporterSecretAsync` | Derive `MLS-Exporter("marmot", "group-event", 32)` for the current epoch |
+| `ListGroupsAsync` | Enumerate every group in storage along with member identities |
+| `DeleteGroupAsync` | Wipe a single group's local state |
+| `VacuumAsync` | SQLite VACUUM to reclaim freed pages |
 
 A minimum-viable provider only needs the create/add/join/exporter quartet
 to support a two-member group (the rest can throw `NotSupportedException`
-during prototyping).
+during prototyping). `ListGroupsAsync` returning an empty list and
+`DeleteGroupAsync` / `VacuumAsync` as no-ops are valid stubs.
 
 ## Security guarantees
 

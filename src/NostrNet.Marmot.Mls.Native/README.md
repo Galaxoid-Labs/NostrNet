@@ -98,5 +98,11 @@ multi-RID release happens through [`.github/workflows/release.yml`](https://gith
 ## Status
 
 Pre-1.0 preview. Wire format is RFC 9420 (= what other MLS
-implementations produce), but cross-implementation interop hasn't been
-verified against an external client yet. API may change before 1.0.
+implementations produce). **Cross-implementation interop is verified
+against [White Noise](https://github.com/marmot-protocol/whitenoise-rs)
+and the upstream [`mdk-core`](https://github.com/marmot-protocol/mdk)
+reference** — bidirectional 1:1 chat (KeyPackage publish + Welcome +
+send/receive of MIP-03 kind-9 chat rumors) works end-to-end. API may
+still change before 1.0; bump the ABI version in
+`nostrnet-marmot-native/src/lib.rs` and the matching test whenever
+the FFI surface changes.

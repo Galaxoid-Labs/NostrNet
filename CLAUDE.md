@@ -116,22 +116,70 @@ Group ops the provider implements (all RFC-9420 wire-compliant):
 | create + start N-party | `CreateGroupAsync` + `AddMembersAsync` (N kp) | `StartGroupAsync` |
 | add peer to existing group | `AddMembersAsync` | `AddPeerAsync` |
 | accept invite | `JoinGroupFromWelcomeAsync` | `TryAcceptInviteAsync` |
-| send | `EncryptApplicationMessageAsync` | `EncryptMessageAsync` |
-| receive (richer) | `ProcessIncomingMlsMessageAsync` | `TryProcessMessageAsync` |
+| send | `EncryptApplicationMessageAsync` | `EncryptMessageAsync` (wraps text in kind-9 rumor) |
+| receive (richer) | `ProcessIncomingMlsMessageAsync` | `TryProcessMessageAsync` (unwraps rumor) |
 | receive (plaintext-only) | (combines above) | `TryDecryptMessageAsync` |
 | remove peer | `RemoveMembersAsync` | `RemovePeerAsync` |
 | rotate own keys | `SelfUpdateAsync` | `RotateKeysAsync` |
 | current exporter (kind-445 key) | `CurrentExporterSecretAsync` | (implicit via send/receive) |
+| **enumerate groups** | `ListGroupsAsync` | (used by `NostrMarmotClient.LoadExistingConversationsAsync`) |
+| **delete local group state** | `DeleteGroupAsync` | (call after `BuildSelfRemoveProposalAsync` for clean leave) |
+| **vacuum SQLite** | `VacuumAsync` | — |
+
+Concrete-only helpers on `OpenMlsProvider` (not on the interface,
+because they need the file path):
+- `Path` (string?) — the file path the provider was opened from.
+- `StateInfoAsync()` → `MarmotStateInfo(Path, SizeOnDiskBytes, GroupCount)` — diagnostics.
+- `WipeStateAsync()` — Dispose + delete the `.db` + `-shm` + `-wal` sidecars.
+
+`MarmotConversation.Peer` is **nullable**: 1:1 conversations set it
+to the other party; multi-member groups and conversations rehydrated
+via `ListGroupsAsync` leave it null.
+
+`NostrMarmotClient.AcceptInviteAsync` returns `MarmotConversation?`.
+Returns `null` on expected-stale failures (NoMatchingKeyPackage —
+local KP rotated away; GroupAlreadyExists — duplicate welcome) so
+consumers don't surface protocol-noise errors for relay-cached
+welcomes from earlier sessions.
+
+`NostrMarmotClient.LoadExistingConversationsAsync` enumerates groups
+on startup, derives the 1:1 peer where unambiguous, and starts
+per-group kind-445 subscriptions. Standard "open the chat list"
+primitive for apps.
 
 State persistence:
 - `new OpenMlsProvider()` — in-memory SQLite (lost on dispose).
 - `OpenMlsProvider.OpenAtPath(path)` — file-backed SQLite. State survives restart.
+
+Two distinct group identifiers, never conflate them:
+- **`nostr_group_id`** (32 bytes): the `h`-tag value on kind-445
+  events. Lives inside the NostrGroupData GroupContextExtension.
+  This is what `MarmotConversation.NostrGroupId` carries and what
+  every .NET-side API operates on.
+- **MLS GroupId** (opaque, variable length): the inviter chose it.
+  mdk-core / White Noise use 16-byte random ids. Our own
+  `CreateGroupAsync` reuses the 32-byte `nostr_group_id` as the MLS
+  GroupId, but joined groups don't.
+
+The Rust crate maintains a `marmot_group_map(nostr_group_id BLOB
+PRIMARY KEY, mls_group_id BLOB)` table on a second rusqlite
+Connection so every FFI op can translate from the 32-byte
+`nostr_group_id` to the right OpenMLS GroupId via
+`group_map::lookup_mls`. The `lookup_mls` helper falls back to
+returning the input unchanged when no row exists, preserving
+backward compat with state DBs that predate the mapping table.
 
 ## FFI conventions (nostrnet-marmot-native ↔ NostrNet.Marmot.Mls.Native)
 
 - All entry points return `i32`. `0` = success, negative = error.
   Last error message stored thread-local; surface via
   `marmot_last_error_message()` → `*const c_char`.
+- ABI version is reported by `marmot_abi_version() -> u32`; managed
+  side asserts on it at startup. **Bump the constant in
+  `nostrnet-marmot-native/src/lib.rs` and the matching test
+  (`LifecycleTests.NativeAbiVersion_IsN`) whenever the FFI surface
+  changes — adding an export, changing a signature, or altering
+  wire bytes.** Current value: `4`.
 - Output buffers are Rust-allocated as `Box<[u8]>` then transferred to
   managed via `(out *mut u8, out usize)`. Managed copies + calls
   `marmot_buffer_free(ptr, len)`.
@@ -140,12 +188,70 @@ State persistence:
   multiple pubkeys for `remove_members`) use length-prefixed blobs:
   `[u32 BE count] [u32 BE len_i] [bytes_i] ...` or
   `[u32 BE count] [32 bytes id_i] ...`.
+- `marmot_list_groups` output: `[u32 BE count] { [32 bytes
+  nostr_group_id] [u32 BE member_count] [member_count*32 bytes
+  identity] }*`.
 - Provider handle is opaque `*mut Provider`. `marmot_provider_new` for
   in-memory; `marmot_provider_open_at_path(c_char*)` for SQLite-backed.
 - Storage is OpenMLS's storage trait, backed by SqliteStorageProvider
   with a JSON codec. **Single source of truth** — there is no
   in-memory state to "rehydrate." Signature keys for any group are
   looked up by `SignatureKeyPair::read(storage, own_leaf_pubkey, scheme)`.
+- A **second** rusqlite Connection on the same path holds the
+  `marmot_group_map` table (nostr_group_id ↔ MLS GroupId) and any
+  future Marmot-specific metadata. Wrapped in `Mutex<Connection>`
+  because rusqlite is `!Sync`.
+- **Every FFI entry that touches the OpenMLS provider takes
+  `provider.ffi_lock` first** via the `provider::lock_ffi` helper.
+  openmls_sqlite_storage wraps its Connection in a `RefCell`; without
+  the mutex, two concurrent FFI calls (an invite + a kind-445
+  message arriving on different pump threads) would hit "RefCell
+  already borrowed" and abort the process across the no-unwind FFI
+  boundary. Lock is coarse-grained per Provider but MLS ops are
+  sub-millisecond so contention is negligible.
+
+## Marmot wire-format details
+
+Hard-won during the White Noise / mdk-core interop work. Each
+deviates from "obvious" and breaks silently if you get it wrong:
+
+- **kind-30443 content** is the raw `KeyPackage` TLS bytes,
+  base64-encoded — NOT wrapped in `MLSMessage(KeyPackage)`. The
+  spec says "TLS-serialized `KeyPackageBundle`" which is loose
+  wording; what mdk-core actually emits and consumes is the bare
+  KeyPackage struct.
+- **`d` tag** must be exactly 64 hex chars (32 bytes). mdk-core
+  rejects anything else as a hard error before MLS validation.
+  `MarmotChat.BuildKeyPackageEventAsync` auto-generates a
+  **deterministic** slot from `sha256("marmot/keypackage-default-slot/v1"
+  || pubkey)` when `slot` is null, so re-publishing replaces the
+  previous addressable event under `(kind, pubkey, d)` instead of
+  stacking new ones (which orphans old init keys after a state
+  wipe).
+- **`mls_extensions` tag** MUST include `0x000a` (LastResort) AND
+  `0xf2ee` (NostrGroupData). The hex format is lowercase
+  `0x` + 4 chars; mdk-core's validator is strict.
+- **`mls_proposals` tag** MUST include `0x000a` (SelfRemove).
+- **LeafNode capabilities** MUST advertise the same extensions +
+  proposals (mdk-core / White Noise enforce this on inbound
+  KeyPackages). KeyPackages we build are always marked
+  `last_resort` for reusability.
+- **GroupContext extensions** on every group: a 0xF2EE Unknown
+  extension carrying the TLS-serialized
+  `MarmotGroupDataExtension`, plus a `RequiredCapabilities`
+  extension listing `Unknown(0xF2EE)` so non-Marmot members are
+  refused.
+- **wire_format_policy** is `MIXED_CIPHERTEXT_WIRE_FORMAT_POLICY`
+  on group create (outgoing ciphertext, inbound accepts either).
+- **kind-444 (Welcome rumor)** wire is an `MLSMessage(Welcome)` —
+  this IS wrapped, unlike kind-30443. Content is base64.
+- **kind-445 application payload** decrypts to a JSON-serialized
+  **unsigned Nostr rumor** with `kind: 9` (Marmot chat message,
+  per MIP-03 / NIP-C7). The chat content is the rumor's `.content`
+  field. `MarmotChat.EncryptMessageAsync(..., senderKey, text)`
+  builds the rumor via `SerializeChatRumor`; the receive path
+  unwraps via `ExtractChatRumor` and falls back to raw UTF-8 for
+  non-rumor payloads.
 
 ## Test vectors
 
@@ -252,7 +358,9 @@ they're load-bearing for every NIP that builds or parses events.
   Don't replace the shared instance with a default client.
 - **Internal `Secp256k1` access.** Consumers outside `NostrNet.Core` add
   themselves to `Core.csproj`'s `<InternalsVisibleTo>` (already done for
-  Crypto, Relay, both test projects). **Never make it public.**
+  Crypto, Relay, Marmot, both test projects). **Never make it public.**
+  `NostrNet.Marmot` is on the list so `MarmotChat.SerializeChatRumor`
+  can reuse `EventSerializer.ComputeId`.
 - **MLS Commit ordering.** If a Commit (epoch-advance) and an
   application message from the new epoch are delivered out of order,
   `TryDecryptMessage` on the app message returns null because the
@@ -263,6 +371,24 @@ they're load-bearing for every NIP that builds or parses events.
   `cargo build`. If Rust isn't on PATH, the project fails fast at build
   time. Other projects (Core, Crypto, Relay, Client, Marmot) build
   without it.
+- **Test FakeProviders must implement the full `IMarmotMlsProvider`
+  surface.** Adding a method here without updating
+  `tests/NostrNet.Marmot.Tests/MarmotChatTests.cs` `FakeProvider`
+  fails the build with CS0535. The CLI sample's fake relay
+  (`NostrMarmotClientTests.FakeRelay`) similarly tracks
+  `IMarmotRelay`.
+- **State-DB wipe ritual.** Wire-format changes (preview2 → preview7)
+  invalidate previously-stored state. When in doubt during interop
+  testing, call `OpenMlsProvider.WipeStateAsync()` or delete the
+  `.db` + `-shm` + `-wal` files manually. Stale entries (signature
+  keys for KPs published under old capabilities, joined groups with
+  wrong required-capabilities, etc.) get reused by OpenMLS and
+  produce confusing failures.
+- **White Noise interop is tested manually**, not in CI. The
+  reference implementation (`mdk-core` / `whitenoise-rs`) lives at
+  github.com/marmot-protocol; check there when fixing a new
+  interop break. Wire-form decisions visible in
+  `crates/mdk-core/src/{key_packages,welcomes,groups,messages,extension/types}.rs`.
 
 ## Documentation, file layout, build
 

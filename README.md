@@ -59,9 +59,21 @@ full design and a complete walkthrough of 1:1 and group flows.
 Group ops supported end-to-end through `NostrNet.Marmot.Mls.Native` (OpenMLS via FFI):
 1:1 + N-party conversations, add peer, remove peer, key rotation
 (MLS self-update), application messages, persistent state (SQLite).
+Conversation resume on startup via
+`NostrMarmotClient.LoadExistingConversationsAsync` (built on the
+`IMarmotMlsProvider.ListGroupsAsync` primitive). State-DB helpers
+`DeleteGroupAsync` / `VacuumAsync` / `StateInfoAsync` /
+`WipeStateAsync` cover the common "delete chat / reset / sign out"
+flows.
+
+**Tested interoperable with [White Noise](https://github.com/marmot-protocol/whitenoise-rs)**
+and the upstream [`mdk-core`](https://github.com/marmot-protocol/mdk)
+reference. Bidirectional 1:1 chat — KeyPackage publish, Welcome,
+add/remove, send/receive of kind-9 chat rumors — works against
+production Marmot clients.
 
 Tested against the official BIP-340, BIP-173, RFC 8439, and NIP-44
-interop vectors — **525+ tests, zero warnings.**
+interop vectors — **540+ tests, zero warnings.**
 
 ## Install
 
