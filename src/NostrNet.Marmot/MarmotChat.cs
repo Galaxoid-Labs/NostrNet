@@ -37,10 +37,10 @@ using SysEncoding = System.Text.Encoding;
 
 namespace NostrNet.Marmot;
 
-/// <summary>A live 1:1 Marmot conversation handle.</summary>
+/// <summary>A live Marmot conversation handle.</summary>
 /// <param name="NostrGroupId">The 32-byte group id used in <c>h</c> tags on kind-445 events.</param>
-/// <param name="Peer">The peer's Nostr x-only public key.</param>
-public sealed record MarmotConversation(byte[] NostrGroupId, PublicKey Peer);
+/// <param name="Peer">For 1:1 conversations the other party's pubkey. <c>null</c> for multi-member groups, or for conversations rehydrated from storage where the peer isn't unambiguous.</param>
+public sealed record MarmotConversation(byte[] NostrGroupId, PublicKey? Peer);
 
 /// <summary>The output of <see cref="MarmotChat.StartConversationAsync"/>.</summary>
 /// <param name="Conversation">Handle to the freshly created conversation.</param>
@@ -342,6 +342,70 @@ public static class MarmotChat
         {
             return null;
         }
+        catch (InvalidOperationException ex) when (IsStaleWelcomeFailure(ex.Message))
+        {
+            // Stale Welcomes are common in long-lived inboxes — a relay
+            // serves the same kind-1059 days later, or we wiped our
+            // local state since the inviter built it. Treat as a no-op.
+            return null;
+        }
+        catch (InvalidOperationException ex) when (IsAlreadyJoinedFailure(ex.Message))
+        {
+            // We've already joined this group locally (e.g. the Welcome
+            // is being redelivered by another relay). Surface the
+            // existing conversation so the caller can resume it.
+            var existing = await TryFindExistingConversationFromWelcomeAsync(
+                provider, welcome, ct).ConfigureAwait(false);
+            return existing;
+        }
+    }
+
+    private static bool IsStaleWelcomeFailure(string message)
+    {
+        return message.Contains("NoMatchingKeyPackage", StringComparison.Ordinal)
+            || message.Contains("WelcomeError", StringComparison.Ordinal);
+    }
+
+    private static bool IsAlreadyJoinedFailure(string message)
+    {
+        return message.Contains("GroupAlreadyExists", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// When a Welcome arrives for a group we've already joined, scan
+    /// the stored-groups list and rebuild the conversation handle so
+    /// the caller still gets a usable object. We can't read the
+    /// nostr_group_id out of the duplicate Welcome bytes without
+    /// re-processing it (which would fail), so we match on the
+    /// inviter being a current member of one of our groups.
+    /// </summary>
+    private static async Task<MarmotConversation?> TryFindExistingConversationFromWelcomeAsync(
+        IMarmotMlsProvider provider,
+        UnwrappedWelcome welcome,
+        CancellationToken ct)
+    {
+        IReadOnlyList<MarmotStoredGroup> groups;
+        try
+        {
+            groups = await provider.ListGroupsAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
+
+        foreach (var g in groups)
+        {
+            foreach (var m in g.Members)
+            {
+                if (m.Equals(welcome.Sender))
+                {
+                    return new MarmotConversation(g.NostrGroupId, welcome.Sender);
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

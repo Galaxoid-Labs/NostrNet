@@ -137,7 +137,7 @@ pub unsafe extern "C" fn marmot_buffer_free(ptr: *mut u8, len: usize) {
 /// mismatched binaries.
 #[unsafe(no_mangle)]
 pub extern "C" fn marmot_abi_version() -> u32 {
-    2
+    3
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -244,6 +244,23 @@ pub unsafe extern "C" fn marmot_create_group(
             out_exporter_len,
         )
     }
+}
+
+/// Enumerate every group currently in storage.
+///
+/// Output blob layout: `[u32 BE count]
+///   { [32 bytes nostr_group_id] [u32 BE member_count] [member_count * 32 bytes member_identity] }*`
+///
+/// # Safety
+/// Standard FFI safety.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_list_groups(
+    provider: *mut Provider,
+    out_blob_ptr: *mut *mut u8,
+    out_blob_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe { group::list_groups(provider, out_blob_ptr, out_blob_len) }
 }
 
 /// # Safety

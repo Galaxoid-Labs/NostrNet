@@ -512,23 +512,61 @@ async Task<int> MarmotChatAsync(string[] argv)
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { cts.Cancel(); e.Cancel = true; };
 
+        // Load conversations from previous sessions (if --state-path was
+        // supplied with an existing DB). Each gets its own kind-445
+        // subscription via TrackConversation inside the client.
+        var existing = await client.LoadExistingConversationsAsync(cts.Token).ConfigureAwait(false);
+        if (existing.Count > 0)
+        {
+            lock (stateLock)
+            {
+                conversations.AddRange(existing);
+                active = 0;
+            }
+            Console.WriteLine($"loaded {existing.Count} existing conversation{(existing.Count == 1 ? "" : "s")} from state:");
+            foreach (var (c, i) in existing.Select((c, i) => (c, i)))
+            {
+                string gidHex = Convert.ToHexStringLower(c.NostrGroupId);
+                string peerLabel = c.Peer is { } pk ? pk.ToNpub()[..16] + "…" : "(group)";
+                Console.WriteLine($"  #{i}  {peerLabel}  group {gidHex}");
+            }
+        }
+
         if (initialPeer is { } peer)
         {
-            Console.WriteLine($"fetching KeyPackage for {peer.ToNpub()}...");
-            var kp = await client.TryGetKeyPackageAsync(peer, TimeSpan.FromSeconds(10), cts.Token).ConfigureAwait(false);
-            if (kp is null)
+            // If a conversation with this peer already exists from a
+            // prior session, just resume it instead of starting a new
+            // one. Real apps would do the same to avoid creating
+            // duplicate groups every time the user opens a chat.
+            int existingIdx;
+            lock (stateLock)
             {
-                Console.Error.WriteLine("  no KeyPackage found within 10s — the peer may not have published one yet.");
+                existingIdx = IndexOfPeer(conversations, peer);
+            }
+
+            if (existingIdx >= 0)
+            {
+                lock (stateLock) { active = existingIdx; }
+                Console.WriteLine($"resumed conversation #{existingIdx} with {peer.ToNpub()[..16]}…");
             }
             else
             {
-                var convo = await client.StartConversationAsync(kp, conversationName: null, ct: cts.Token).ConfigureAwait(false);
-                lock (stateLock)
+                Console.WriteLine($"fetching KeyPackage for {peer.ToNpub()}...");
+                var kp = await client.TryGetKeyPackageAsync(peer, TimeSpan.FromSeconds(10), cts.Token).ConfigureAwait(false);
+                if (kp is null)
                 {
-                    conversations.Add(convo);
-                    active = conversations.Count - 1;
+                    Console.Error.WriteLine("  no KeyPackage found within 10s — the peer may not have published one yet.");
                 }
-                Console.WriteLine($"started conversation #{active} with {peer.ToNpub()[..16]}…");
+                else
+                {
+                    var convo = await client.StartConversationAsync(kp, conversationName: null, ct: cts.Token).ConfigureAwait(false);
+                    lock (stateLock)
+                    {
+                        conversations.Add(convo);
+                        active = conversations.Count - 1;
+                    }
+                    Console.WriteLine($"started conversation #{active} with {peer.ToNpub()[..16]}…");
+                }
             }
         }
 
@@ -547,14 +585,33 @@ async Task<int> MarmotChatAsync(string[] argv)
                                 try
                                 {
                                     var convo = await client.AcceptInviteAsync(invite, cts.Token).ConfigureAwait(false);
+                                    if (convo is null)
+                                    {
+                                        // Stale or duplicate Welcome — silently skip; nothing for the user to do.
+                                        break;
+                                    }
+
                                     int n;
+                                    bool isNew;
                                     lock (stateLock)
                                     {
-                                        conversations.Add(convo);
-                                        n = conversations.Count - 1;
-                                        if (active < 0) active = n;
+                                        n = IndexOfGroup(conversations, convo.NostrGroupId, stateLock);
+                                        if (n < 0)
+                                        {
+                                            conversations.Add(convo);
+                                            n = conversations.Count - 1;
+                                            if (active < 0) active = n;
+                                            isNew = true;
+                                        }
+                                        else
+                                        {
+                                            isNew = false;
+                                        }
                                     }
-                                    Console.WriteLine($"\n[invite] auto-accepted from {invite.Sender.ToNpub()[..16]}… → conversation #{n}");
+                                    if (isNew)
+                                    {
+                                        Console.WriteLine($"\n[invite] auto-accepted from {invite.Sender.ToNpub()[..16]}… → conversation #{n}");
+                                    }
                                 }
                                 catch (Exception ex)
                                 {
@@ -636,8 +693,11 @@ async Task<int> MarmotChatAsync(string[] argv)
                     for (int i = 0; i < conversations.Count; i++)
                     {
                         string marker = i == active ? "*" : " ";
-                        string gid = Convert.ToHexStringLower(conversations[i].NostrGroupId)[..16];
-                        Console.WriteLine($"  {marker} #{i}  group {gid}…");
+                        string gid = Convert.ToHexStringLower(conversations[i].NostrGroupId);
+                        string peerLabel = conversations[i].Peer is { } pk
+                            ? pk.ToNpub()[..16] + "…"
+                            : "(group)";
+                        Console.WriteLine($"  {marker} #{i}  {peerLabel}  group {gid}");
                     }
 
                     if (conversations.Count == 0)
@@ -691,14 +751,25 @@ async Task<int> MarmotChatAsync(string[] argv)
                     try
                     {
                         var convo = await client.AcceptInviteAsync(invite, cts.Token).ConfigureAwait(false);
-                        int n;
-                        lock (stateLock)
+                        if (convo is null)
                         {
-                            conversations.Add(convo);
-                            n = conversations.Count - 1;
-                            if (active < 0) active = n;
+                            Console.WriteLine("  invite stale (the local KeyPackage it references is gone); skipped.");
                         }
-                        Console.WriteLine($"  joined as conversation #{n}");
+                        else
+                        {
+                            int n;
+                            lock (stateLock)
+                            {
+                                n = IndexOfGroup(conversations, convo.NostrGroupId, stateLock);
+                                if (n < 0)
+                                {
+                                    conversations.Add(convo);
+                                    n = conversations.Count - 1;
+                                    if (active < 0) active = n;
+                                }
+                            }
+                            Console.WriteLine($"  joined as conversation #{n}");
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -869,6 +940,35 @@ async Task<int> MarmotChatAsync(string[] argv)
                 {
                     return i;
                 }
+            }
+        }
+
+        return -1;
+    }
+
+    // Caller-locked variant for use inside an already-held lock.
+    static int IndexOfGroup(List<MarmotConversation> list, byte[] nostrGroupId, object @lock)
+    {
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i].NostrGroupId.AsSpan().SequenceEqual(nostrGroupId.AsSpan()))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    // Match a 1:1 conversation by the peer's pubkey. Returns -1 if no
+    // existing conversation pairs with this peer.
+    static int IndexOfPeer(List<MarmotConversation> list, PublicKey peer)
+    {
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i].Peer is { } p && p.Equals(peer))
+            {
+                return i;
             }
         }
 

@@ -46,7 +46,8 @@ public class NostrMarmotClientTests
         Assert.Equal(aliceKey.PublicKey, invite.Sender);
 
         var bobConvo = await bob.AcceptInviteAsync(invite);
-        Assert.Equal(aliceConvo.NostrGroupId, bobConvo.NostrGroupId);
+        Assert.NotNull(bobConvo);
+        Assert.Equal(aliceConvo.NostrGroupId, bobConvo!.NostrGroupId);
 
         await alice.SendAsync(aliceConvo, "hello bob");
 

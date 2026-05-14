@@ -566,6 +566,69 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
     }
 
     /// <inheritdoc/>
+    public unsafe Task<IReadOnlyList<MarmotStoredGroup>> ListGroupsAsync(CancellationToken ct = default)
+    {
+        IntPtr blobPtr = IntPtr.Zero;
+        nuint blobLen = 0;
+        int rc = NativeBindings.ListGroups(_handle.DangerousPointer, &blobPtr, &blobLen);
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(ListGroupsAsync));
+        }
+
+        byte[] blob = FfiBuffer.CopyAndFree(blobPtr, blobLen);
+        var groups = ParseStoredGroupsBlob(blob);
+        return Task.FromResult(groups);
+    }
+
+    private static IReadOnlyList<MarmotStoredGroup> ParseStoredGroupsBlob(byte[] blob)
+    {
+        // Layout: [u32 BE count] { [32 bytes gid] [u32 BE member_count] [member_count*32 bytes pubkey] }*
+        if (blob.Length < 4)
+        {
+            return Array.Empty<MarmotStoredGroup>();
+        }
+
+        int cursor = 0;
+        uint count = ReadUInt32BigEndian(blob, ref cursor);
+        var groups = new List<MarmotStoredGroup>((int)count);
+        for (uint i = 0; i < count; i++)
+        {
+            if (cursor + 36 > blob.Length)
+            {
+                break;
+            }
+
+            byte[] gid = new byte[32];
+            Buffer.BlockCopy(blob, cursor, gid, 0, 32);
+            cursor += 32;
+            uint memberCount = ReadUInt32BigEndian(blob, ref cursor);
+            if (cursor + (int)memberCount * 32 > blob.Length)
+            {
+                break;
+            }
+
+            var members = new PublicKey[memberCount];
+            for (uint m = 0; m < memberCount; m++)
+            {
+                members[m] = new PublicKey(blob.AsSpan(cursor, 32));
+                cursor += 32;
+            }
+
+            groups.Add(new MarmotStoredGroup(gid, members));
+        }
+
+        return groups;
+
+        static uint ReadUInt32BigEndian(byte[] buf, ref int cur)
+        {
+            uint v = ((uint)buf[cur] << 24) | ((uint)buf[cur + 1] << 16) | ((uint)buf[cur + 2] << 8) | buf[cur + 3];
+            cur += 4;
+            return v;
+        }
+    }
+
+    /// <inheritdoc/>
     public void Dispose()
     {
         if (_disposed)

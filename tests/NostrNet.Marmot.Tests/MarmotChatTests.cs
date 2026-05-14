@@ -149,6 +149,11 @@ public class MarmotChatTests
         {
             return Task.FromResult(_byGroup[Convert.ToHexStringLower(groupId.Span)]);
         }
+
+        public Task<IReadOnlyList<MarmotStoredGroup>> ListGroupsAsync(CancellationToken ct = default)
+        {
+            return Task.FromResult<IReadOnlyList<MarmotStoredGroup>>(Array.Empty<MarmotStoredGroup>());
+        }
     }
 
     [Fact]

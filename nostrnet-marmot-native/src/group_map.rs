@@ -60,6 +60,35 @@ pub(crate) fn lookup_mls(provider: &Provider, nostr_group_id: &[u8]) -> Result<V
     Ok(mls.unwrap_or_else(|| nostr_group_id.to_vec()))
 }
 
+/// List every nostr_group_id we've registered. Used on startup to
+/// recreate conversation handles for groups already in storage.
+pub(crate) fn list_nostr_group_ids(provider: &Provider) -> Result<Vec<[u8; 32]>, String> {
+    let conn = provider
+        .marmot_meta
+        .lock()
+        .map_err(|e| format!("marmot_meta lock: {e}"))?;
+    let mut stmt = conn
+        .prepare("SELECT nostr_group_id FROM marmot_group_map ORDER BY rowid")
+        .map_err(|e| format!("marmot_group_map prepare: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let blob: Vec<u8> = row.get(0)?;
+            Ok(blob)
+        })
+        .map_err(|e| format!("marmot_group_map query: {e}"))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let blob = row.map_err(|e| format!("marmot_group_map row: {e}"))?;
+        if blob.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&blob);
+            out.push(arr);
+        }
+    }
+    Ok(out)
+}
+
 /// Drop the mapping for the given nostr_group_id. Currently unused;
 /// reserved for future RemoveGroup / leave-group plumbing.
 #[allow(dead_code)]

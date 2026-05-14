@@ -117,6 +117,11 @@ internal static partial class NativeBindings
         byte* nostrGroupIdPtr,
         IntPtr* outExporterPtr, nuint* outExporterLen);
 
+    [LibraryImport(Library, EntryPoint = "marmot_list_groups")]
+    public static unsafe partial int ListGroups(
+        IntPtr provider,
+        IntPtr* outBlobPtr, nuint* outBlobLen);
+
     // ────────────────────────────────────────────────────────────
     // Application messages.
     // ────────────────────────────────────────────────────────────

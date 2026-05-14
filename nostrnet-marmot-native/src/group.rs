@@ -61,6 +61,60 @@ fn extract_nostr_group_id(group: &MlsGroup) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
+/// Enumerate every group present in storage. For each group, emit
+/// its 32-byte Nostr group id and the per-member identity blob
+/// (currently 32 bytes per member; BasicCredential identities are
+/// the Nostr pubkey hex bytes).
+pub unsafe fn list_groups(
+    provider: *mut Provider,
+    out_blob_ptr: *mut *mut u8,
+    out_blob_len: *mut usize,
+) -> i32 {
+    if provider.is_null() {
+        return fail(ErrorCode::NullArgument, "provider handle is null");
+    }
+    let provider = unsafe { &*provider };
+
+    let nostr_ids = match crate::group_map::list_nostr_group_ids(provider) {
+        Ok(v) => v,
+        Err(e) => return fail(ErrorCode::StorageFailure, e),
+    };
+
+    let mut blob: Vec<u8> = Vec::new();
+    let mut count: u32 = 0;
+    for nostr_id in &nostr_ids {
+        // Look up the underlying MLS group via the mapping.
+        let group = match load_group(provider, nostr_id) {
+            Ok(g) => g,
+            Err(_) => continue,  // stale row — skip
+        };
+
+        blob.extend_from_slice(nostr_id);
+        let mut member_blob: Vec<u8> = Vec::new();
+        let mut member_count: u32 = 0;
+        for m in group.members() {
+            if let Ok(b) = BasicCredential::try_from(m.credential.clone()) {
+                let identity = b.identity();
+                if identity.len() == 32 {
+                    member_blob.extend_from_slice(identity);
+                    member_count += 1;
+                }
+            }
+        }
+        blob.extend_from_slice(&member_count.to_be_bytes());
+        blob.extend_from_slice(&member_blob);
+        count += 1;
+    }
+
+    // Prepend the total group count.
+    let mut framed = Vec::with_capacity(4 + blob.len());
+    framed.extend_from_slice(&count.to_be_bytes());
+    framed.extend_from_slice(&blob);
+
+    unsafe { return_ffi_buffer(framed, out_blob_ptr, out_blob_len); }
+    ErrorCode::Success as i32
+}
+
 /// Loads the local member's SignatureKeyPair for a given group by
 /// looking up the own-leaf signature pubkey in OpenMLS storage.
 pub(crate) fn load_own_signature_keys(

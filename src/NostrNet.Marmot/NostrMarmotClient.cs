@@ -189,10 +189,14 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
 
     /// <summary>
     /// Accepts a previously-received <see cref="MarmotInviteReceived"/>
-    /// by processing the wrapped Welcome and joining the group. After
-    /// success the conversation is tracked for inbound kind-445 events.
+    /// by processing the wrapped Welcome and joining the group. Returns
+    /// <c>null</c> when the invite is stale (the local KeyPackage it
+    /// references has been rotated away) or otherwise unprocessable, so
+    /// consumers can silently skip relay-cached old Welcomes instead of
+    /// surfacing an error. When the Welcome is a duplicate of one we
+    /// already accepted, the existing conversation is returned.
     /// </summary>
-    public async Task<MarmotConversation> AcceptInviteAsync(
+    public async Task<MarmotConversation?> AcceptInviteAsync(
         MarmotInviteReceived invite,
         CancellationToken ct = default)
     {
@@ -203,12 +207,58 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
             _provider, _identityKey, invite.OriginalGiftWrap, ct).ConfigureAwait(false);
         if (convo is null)
         {
-            throw new InvalidOperationException(
-                "Failed to accept invite — the gift wrap could not be unwrapped or the inner Welcome was unprocessable.");
+            return null;
         }
 
         TrackConversation(convo);
         return convo;
+    }
+
+    /// <summary>
+    /// Enumerate every Marmot conversation already in the underlying
+    /// MLS store and start subscribing to each one's kind-445 traffic.
+    /// Intended for app startup — calling it lets the app restore the
+    /// conversations from a previous session without each having to be
+    /// re-accepted from a Welcome.
+    /// </summary>
+    /// <returns>The list of conversations now being tracked.</returns>
+    public async Task<IReadOnlyList<MarmotConversation>> LoadExistingConversationsAsync(CancellationToken ct = default)
+    {
+        EnsureNotDisposed();
+        IReadOnlyList<MarmotStoredGroup> stored = await _provider.ListGroupsAsync(ct).ConfigureAwait(false);
+
+        var conversations = new List<MarmotConversation>(stored.Count);
+        foreach (var g in stored)
+        {
+            // For a 1:1 conversation the "peer" is the single other
+            // member. For multi-member groups we leave Peer null —
+            // the caller can read .Members itself if it cares.
+            PublicKey? peer = null;
+            PublicKey self = Identity;
+            int otherCount = 0;
+            foreach (var m in g.Members)
+            {
+                if (!m.Equals(self))
+                {
+                    otherCount++;
+                    if (otherCount == 1)
+                    {
+                        peer = m;
+                    }
+                    else
+                    {
+                        peer = null;
+                        break;
+                    }
+                }
+            }
+
+            var convo = new MarmotConversation(g.NostrGroupId, peer);
+            TrackConversation(convo);
+            conversations.Add(convo);
+        }
+
+        return conversations;
     }
 
     /// <summary>

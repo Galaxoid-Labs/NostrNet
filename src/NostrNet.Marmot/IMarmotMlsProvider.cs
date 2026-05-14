@@ -159,7 +159,22 @@ public interface IMarmotMlsProvider
     Task<byte[]> CurrentExporterSecretAsync(
         ReadOnlyMemory<byte> nostrGroupId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Enumerate every group currently in storage, along with the
+    /// per-group member identity pubkeys. Useful at startup to
+    /// reconstruct conversation handles for groups joined in earlier
+    /// sessions.
+    /// </summary>
+    Task<IReadOnlyList<MarmotStoredGroup>> ListGroupsAsync(CancellationToken ct = default);
 }
+
+/// <summary>A single group present in MLS storage.</summary>
+/// <param name="NostrGroupId">32-byte Nostr group id (the h-tag value).</param>
+/// <param name="Members">Identity pubkeys of every active member of the group, including ourselves.</param>
+public sealed record MarmotStoredGroup(
+    byte[] NostrGroupId,
+    IReadOnlyList<PublicKey> Members);
 
 /// <summary>The serialized bytes and metadata of a KeyPackage bundle.</summary>
 public sealed record KeyPackageBundle(
