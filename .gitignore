@@ -480,3 +480,10 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# NostrNet — local dev artifacts
+local-nupkgs/
+
+# NostrNet.Marmot.Mls.Native — CI populates this; locally pop the host RID
+# in here to test the pack pipeline.
+src/NostrNet.Marmot.Mls.Native/prebuilt/

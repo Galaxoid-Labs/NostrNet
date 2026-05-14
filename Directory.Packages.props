@@ -16,6 +16,11 @@
     <PackageVersion Include="NBitcoin.Secp256k1" Version="4.0.0" />
   </ItemGroup>
 
+  <ItemGroup Label="Build-time only">
+    <!-- Source linking from .nupkg → GitHub blob. -->
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
+  </ItemGroup>
+
   <ItemGroup Label="Test dependencies">
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />

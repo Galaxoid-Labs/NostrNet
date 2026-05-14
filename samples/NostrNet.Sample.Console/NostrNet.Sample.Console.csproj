@@ -3,6 +3,8 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>NostrNet.Sample.Console</RootNamespace>
+    <!-- Sample / demo app — not a library, not shipped to NuGet. -->
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>

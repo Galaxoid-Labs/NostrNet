@@ -18,6 +18,24 @@
     <NativeLibName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libnostrnet_marmot_native.so</NativeLibName>
     <NativeLibName Condition="$([MSBuild]::IsOSPlatform('Windows'))">nostrnet_marmot_native.dll</NativeLibName>
     <NativeLibPath>$(CargoCrateDir)\target\$(CargoProfile)\$(NativeLibName)</NativeLibPath>
+
+    <!--
+      Pack mode: CI populates the `prebuilt/` directory below before
+      `dotnet pack`. The pack glob picks up everything there. For a
+      complete multi-RID NuGet, CI must arrange:
+
+        prebuilt/linux-x64/libnostrnet_marmot_native.so
+        prebuilt/linux-arm64/libnostrnet_marmot_native.so
+        prebuilt/osx-x64/libnostrnet_marmot_native.dylib
+        prebuilt/osx-arm64/libnostrnet_marmot_native.dylib
+        prebuilt/win-x64/nostrnet_marmot_native.dll
+        prebuilt/win-arm64/nostrnet_marmot_native.dll
+
+      Local `dotnet pack` without populating prebuilt/ will produce a
+      single-RID NuGet with only the host's binary — intentional, so
+      developers can test the pack pipeline.
+    -->
+    <NativePrebuiltRoot>$(MSBuildThisFileDirectory)prebuilt</NativePrebuiltRoot>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,10 +49,9 @@
   </ItemGroup>
 
   <!--
-    Phase 1: invoke `cargo build` before the rest of the build. The
-    native lib is then declared as Content (via the InjectNativeLib
-    target below) so it propagates to consuming projects' bin output.
-    Cross-compilation + multi-RID NuGet packaging is phase 2.
+    Local build target: invoke `cargo build` to produce the host's
+    native artifact, then declare it as Content so it propagates to
+    dependent test projects' bin folders. Unchanged from before.
   -->
   <Target Name="CargoBuild" BeforeTargets="BeforeBuild;BeforeResolveReferences">
     <PropertyGroup>
@@ -48,13 +65,36 @@
           AfterTargets="CargoBuild"
           BeforeTargets="AssignTargetPaths">
     <ItemGroup>
+      <!--
+        Pack="false" because packing is driven solely by the
+        prebuilt/**/* glob below. This Content is only here to flow
+        the host's binary into the local bin/Debug/net10.0/ for
+        `dotnet build` + `dotnet test`.
+      -->
       <Content Include="$(NativeLibPath)"
                Link="$(NativeLibName)"
-               Visible="false">
+               Visible="false"
+               Pack="false">
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       </Content>
     </ItemGroup>
   </Target>
+
+  <!--
+    Pack target: glob each prebuilt RID under prebuilt/<rid>/ into the
+    NuGet at runtimes/<rid>/native/. Items only exist if CI has
+    populated the directory; otherwise the glob is empty and pack
+    proceeds with just the host's binary (declared above).
+
+    %(RecursiveDir) captures the RID directory name, so a file at
+    prebuilt/linux-x64/foo.so lands at runtimes/linux-x64/native/foo.so.
+  -->
+  <ItemGroup>
+    <None Include="$(NativePrebuiltRoot)\**\*.so;$(NativePrebuiltRoot)\**\*.dylib;$(NativePrebuiltRoot)\**\*.dll"
+          Pack="true"
+          PackagePath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+          Visible="false" />
+  </ItemGroup>
 
 </Project>

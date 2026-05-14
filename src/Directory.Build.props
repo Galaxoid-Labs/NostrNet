@@ -30,9 +30,30 @@
     <Product>NostrNet</Product>
     <Description>Cross-platform .NET Nostr client library: keys, events, NIP-19, NIP-44 v2, NIP-17 DMs, relay client.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/galaxoidlabs/NostrNet</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/Galaxoid-Labs/NostrNet</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Galaxoid-Labs/NostrNet.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>nostr;nip-01;nip-19;nip-44;nip-17;crypto;schnorr;secp256k1</PackageTags>
+
+    <!-- Embed repository commit metadata + source link into the package
+         so consumers can step into NostrNet source from a debugger. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+    <!-- If the project has a sibling README.md, pack it.
+         $(MSBuildProjectDirectory) is the *consuming* csproj's folder,
+         not Directory.Build.props's folder. -->
+    <PackageReadmeFile Condition="Exists('$(MSBuildProjectDirectory)\README.md')">README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\README.md')">
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>
