@@ -137,15 +137,21 @@ public static class MarmotChat
     public static async Task<NostrEvent> BuildKeyPackageEventAsync(
         IMarmotMlsProvider provider,
         PrivateKey myKey,
-        string slot,
+        string? slot,
         IReadOnlyList<string> relays,
         ushort ciphersuite = DefaultCiphersuite,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(myKey);
-        ArgumentException.ThrowIfNullOrEmpty(slot);
         ArgumentNullException.ThrowIfNull(relays);
+
+        // MIP-00 mandates the `d` tag be exactly 64 hex chars (32 random
+        // bytes). Callers that pass null/empty get a fresh random slot;
+        // callers that pass a 64-char hex string get to rotate that
+        // specific slot. Anything else is rejected because mdk-core /
+        // White Noise refuse to parse it.
+        slot = NormalizeKeyPackageSlot(slot);
 
         // The Rust crate hardcodes the Marmot baseline capabilities
         // (LastResort + NostrGroupData extensions, SelfRemove proposal)
@@ -188,6 +194,44 @@ public static class MarmotChat
     /// Starts a 1:1 conversation with the peer whose KeyPackage event is
     /// <c>peerKeyPackageEvent</c>. Creates a new MLS group, adds the
     /// peer, and gift-wraps the resulting Welcome for delivery.
+    /// </summary>
+    private static string NormalizeKeyPackageSlot(string? slot)
+    {
+        if (string.IsNullOrEmpty(slot))
+        {
+            byte[] random = new byte[32];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(random);
+            return Convert.ToHexStringLower(random);
+        }
+
+        if (slot.Length != 64 || !IsHex(slot))
+        {
+            throw new ArgumentException(
+                $"KeyPackage slot (the d-tag value) must be a 64-character hex string per MIP-00; got '{slot}' ({slot.Length} chars).",
+                nameof(slot));
+        }
+
+        return slot;
+
+        static bool IsHex(string s)
+        {
+            foreach (char c in s)
+            {
+                if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') && !(c >= 'A' && c <= 'F'))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Starts a 1:1 Marmot conversation with the author of
+    /// <paramref name="peerKeyPackageEvent"/>. Creates the MLS group,
+    /// adds the peer using their KeyPackage, and builds the NIP-59
+    /// gift-wrapped Welcome event the caller should publish.
     /// </summary>
     public static async Task<MarmotConversationStarted> StartConversationAsync(
         IMarmotMlsProvider provider,

@@ -37,8 +37,8 @@ public class GroupChatTests
         var relays = new[] { "wss://relay.example" };
 
         // Bob and Carol publish KeyPackages.
-        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, "default", relays);
-        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, "default", relays);
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, null, relays);
+        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, null, relays);
 
         // Alice starts a group with both.
         var started = await MarmotChat.StartGroupAsync(
@@ -85,8 +85,8 @@ public class GroupChatTests
         var relays = new[] { "wss://relay.example" };
 
         // Start a 3-member group.
-        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, "default", relays);
-        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, "default", relays);
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, null, relays);
+        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, null, relays);
         var started = await MarmotChat.StartGroupAsync(
             alice.Provider, alice.Key, new[] { bobKp, carolKp }, "group", relays);
         var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob.Provider, bob.Key, started.WelcomeGiftWraps[0]);
@@ -100,7 +100,7 @@ public class GroupChatTests
         Assert.Equal("hi", await MarmotChat.TryDecryptMessageAsync(carol.Provider, carolConvo, pre));
 
         // Dave publishes a KeyPackage and Alice adds him.
-        var daveKp = await MarmotChat.BuildKeyPackageEventAsync(dave.Provider, dave.Key, "default", relays);
+        var daveKp = await MarmotChat.BuildKeyPackageEventAsync(dave.Provider, dave.Key, null, relays);
         var add = await MarmotChat.AddPeerAsync(alice.Provider, alice.Key, started.Conversation, daveKp, relays);
 
         // Dave joins via the Welcome gift wrap.
@@ -138,7 +138,7 @@ public class GroupChatTests
         using var bob = Make();
         var relays = new[] { "wss://relay.example" };
 
-        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, "default", relays);
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, null, relays);
         var started = await MarmotChat.StartConversationAsync(alice.Provider, alice.Key, bobKp, "1:1", relays);
         var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob.Provider, bob.Key, started.WelcomeGiftWrap);
         Assert.NotNull(bobConvo);
@@ -168,8 +168,8 @@ public class GroupChatTests
         using var dave = Make();
         var relays = new[] { "wss://relay.example" };
 
-        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, "default", relays);
-        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, "default", relays);
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, null, relays);
+        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, null, relays);
         var started = await MarmotChat.StartGroupAsync(
             alice.Provider, alice.Key, new[] { bobKp, carolKp }, "g", relays);
         var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob.Provider, bob.Key, started.WelcomeGiftWraps[0]);
@@ -177,7 +177,7 @@ public class GroupChatTests
         Assert.NotNull(bobConvo);
         Assert.NotNull(carolConvo);
 
-        var daveKp = await MarmotChat.BuildKeyPackageEventAsync(dave.Provider, dave.Key, "default", relays);
+        var daveKp = await MarmotChat.BuildKeyPackageEventAsync(dave.Provider, dave.Key, null, relays);
         var add = await MarmotChat.AddPeerAsync(alice.Provider, alice.Key, started.Conversation, daveKp, relays);
 
         var bobProc = await MarmotChat.TryProcessMessageAsync(bob.Provider, bobConvo, add.CommitGroupEvent);

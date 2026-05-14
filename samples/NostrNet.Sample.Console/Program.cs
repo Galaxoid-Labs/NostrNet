@@ -401,7 +401,7 @@ async Task<int> MarmotMlsSmokeAsync()
     // Bob publishes his KeyPackage event (kind-30443). In a real app this
     // would be sent to his inbox relays.
     var bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(
-        bobProv, bobKey, slot: "default", relays);
+        bobProv, bobKey, slot: null, relays);
 
     // Alice fetches Bob's KeyPackage off a relay (skipped here) and starts
     // a conversation. She gets a kind-1059 gift wrap to publish to Bob.

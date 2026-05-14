@@ -25,7 +25,7 @@ public class MarmotChatIntegrationTests
 
         // Bob publishes a KeyPackage.
         var bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(
-            bob, bobKey, slot: "default", relays);
+            bob, bobKey, slot: null, relays);
         Assert.True(bobKpEvent.Verify());
 
         // Alice starts a conversation by referencing it.
@@ -72,7 +72,7 @@ public class MarmotChatIntegrationTests
         using var bobKey = PrivateKey.Generate();
         var relays = new[] { "wss://relay.example" };
 
-        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob, bobKey, "default", relays);
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob, bobKey, null, relays);
         var started = await MarmotChat.StartConversationAsync(alice, aliceKey, bobKp, "t", relays);
         var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob, bobKey, started.WelcomeGiftWrap);
         Assert.NotNull(bobConvo);

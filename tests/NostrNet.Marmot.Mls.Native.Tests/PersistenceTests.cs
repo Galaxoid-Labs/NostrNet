@@ -38,7 +38,7 @@ public class PersistenceTests
                 using var aliceProv = OpenMlsProvider.OpenAtPath(aliceDb);
                 using var bobProv = OpenMlsProvider.OpenAtPath(bobDb);
 
-                var bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(bobProv, bobKey, "default", relays);
+                var bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(bobProv, bobKey, null, relays);
                 var started = await MarmotChat.StartConversationAsync(
                     aliceProv, aliceKey, bobKpEvent, "persisted", relays);
                 var bobConvo = await MarmotChat.TryAcceptInviteAsync(bobProv, bobKey, started.WelcomeGiftWrap);
@@ -106,7 +106,7 @@ public class PersistenceTests
             {
                 using var bobProv = OpenMlsProvider.OpenAtPath(bobDb);
                 bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(
-                    bobProv, bobKey, "default", relays);
+                    bobProv, bobKey, null, relays);
             }
 
             // Alice (always fresh in-memory) starts a conversation against

@@ -183,8 +183,12 @@ pub unsafe fn create_group(
 
     let capabilities = marmot_capabilities(provider.crypto.rand(), suite);
 
+    // Mirror mdk-core's wire-format policy: always send Private (encrypted)
+    // outgoing, accept either Public or Private inbound. Anything else
+    // produces messages other Marmot clients reject as wrong-frame.
     let group_config = MlsGroupCreateConfig::builder()
         .ciphersuite(suite)
+        .wire_format_policy(MIXED_CIPHERTEXT_WIRE_FORMAT_POLICY)
         .use_ratchet_tree_extension(true)
         .capabilities(capabilities)
         .with_group_context_extensions(context_extensions)

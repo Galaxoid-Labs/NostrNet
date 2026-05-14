@@ -29,8 +29,8 @@ public class MembershipChangeTests
         var relays = new[] { "wss://relay.example" };
 
         // 3-member group with Alice as founder.
-        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, "default", relays);
-        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, "default", relays);
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, null, relays);
+        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, null, relays);
         var started = await MarmotChat.StartGroupAsync(
             alice.Provider, alice.Key, new[] { bobKp, carolKp }, "test", relays);
         var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob.Provider, bob.Key, started.WelcomeGiftWraps[0]);
@@ -74,7 +74,7 @@ public class MembershipChangeTests
         using var bob = Make();
         var relays = new[] { "wss://relay.example" };
 
-        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, "default", relays);
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, null, relays);
         var started = await MarmotChat.StartConversationAsync(
             alice.Provider, alice.Key, bobKp, "1:1", relays);
         var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob.Provider, bob.Key, started.WelcomeGiftWrap);

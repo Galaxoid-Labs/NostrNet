@@ -163,7 +163,7 @@ public class MarmotChatTests
 
         // 1. Bob publishes a KeyPackage event.
         var bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(
-            bobProv, bobKey, slot: "default", relays);
+            bobProv, bobKey, slot: null, relays);
         Assert.Equal(MarmotKinds.KeyPackage, bobKpEvent.Kind);
         Assert.True(bobKpEvent.Verify());
 
@@ -226,7 +226,7 @@ public class MarmotChatTests
 
         var relays = new[] { "wss://relay.example" };
         var bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(
-            aliceProv, bob, "default", relays);
+            aliceProv, bob, null, relays);
 
         var started = await MarmotChat.StartConversationAsync(
             aliceProv, alice, bobKpEvent, null, relays);

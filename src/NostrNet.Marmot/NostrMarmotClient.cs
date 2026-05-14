@@ -80,7 +80,7 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
     /// you can keep its id for later (e.g. to log what slot was used).
     /// </summary>
     public async Task<NostrEvent> PublishKeyPackageAsync(
-        string slot = "default",
+        string? slot = null,
         ushort ciphersuite = DefaultCiphersuite,
         CancellationToken ct = default)
     {
