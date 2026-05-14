@@ -69,6 +69,48 @@ ratchet (keyed for their leaf) and track the peer's inbound generation
 independently. See `samples/NostrNet.Sample.Console` for an end-to-end
 demo (`marmot-mls-smoke` subcommand).
 
+### Multi-member groups
+
+For 3+ member groups, use `StartGroupAsync` to create with multiple
+initial members and `AddPeerAsync` to grow an existing group:
+
+```csharp
+// Start a group with multiple initial members.
+var started = await MarmotChat.StartGroupAsync(
+    provider, myKey,
+    peerKeyPackageEvents: new[] { bobKpEvent, carolKpEvent },
+    "Project channel",
+    relays);
+// publish each of started.WelcomeGiftWraps[i] to the corresponding peer's inbox.
+
+// Add a peer to an existing conversation.
+var added = await MarmotChat.AddPeerAsync(
+    provider, myKey, convo, davesKpEvent, relays);
+// publish added.WelcomeGiftWrap to Dave's inbox.
+// publish added.CommitGroupEvent (kind-445) to the group — existing
+// members process it to advance their epoch.
+
+// Existing members process the inbound Commit:
+var processed = await MarmotChat.TryProcessMessageAsync(provider, convo, kind445Event);
+if (processed?.Kind == MarmotMessageKind.Commit && processed.EpochAdvanced)
+{
+    // Group state changed. Subsequent EncryptMessageAsync uses the new exporter.
+}
+```
+
+`TryProcessMessageAsync` is the richer counterpart to
+`TryDecryptMessageAsync`: it tells you whether the inbound message was
+an Application message (with plaintext), a Commit (group state changed),
+or a Proposal (queued for a future Commit). `TryDecryptMessageAsync`
+returns just the plaintext for app-developer convenience when you don't
+care about Commits.
+
+**Important constraint**: Commits must be processed before application
+messages from the new epoch, because the new app messages are keyed to
+the new exporter. If a relay delivers events out of order, your receive
+loop will see decrypt failures on app messages until the Commit arrives
+— park-and-retry is the standard fix.
+
 ## Low-level flow
 
 The flow always has the same shape regardless of MLS provider:

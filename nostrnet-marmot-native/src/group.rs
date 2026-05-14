@@ -3,7 +3,7 @@
 // Group lifecycle FFI: create, add_member, join_from_welcome, exporter.
 
 use crate::buffer::{input_slice, return_ffi_buffer};
-use crate::errors::{ErrorCode, fail, set_last_error};
+use crate::errors::{ErrorCode, fail};
 use crate::keypackage::ciphersuite_from_u16;
 use crate::provider::{GroupState, Provider};
 
@@ -145,22 +145,27 @@ pub unsafe fn create_group(
     ErrorCode::Success as i32
 }
 
-/// Add a single member to the group, producing a Welcome blob.
+/// Add one or more members to the group, producing a single Welcome
+/// blob (carrying EncryptedGroupSecrets for each new member) and a
+/// single Commit MLSMessage.
+///
+/// Input format for `keypackage_blob`: `[u32 BE count] [u32 BE len_0] [bytes_0] ...`
+/// Output `recipients` format: `[u32 BE count] [32 bytes id_0] ...`
 ///
 /// # Safety
 /// Standard FFI safety.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn add_member(
+pub unsafe fn add_members(
     provider: *mut Provider,
     nostr_group_id_ptr: *const u8,
-    keypackage_bundle_ptr: *const u8,
-    keypackage_bundle_len: usize,
+    keypackage_blob_ptr: *const u8,
+    keypackage_blob_len: usize,
     out_commit_ptr: *mut *mut u8,
     out_commit_len: *mut usize,
     out_welcome_ptr: *mut *mut u8,
     out_welcome_len: *mut usize,
-    out_recipient_ptr: *mut *mut u8,
-    out_recipient_len: *mut usize,
+    out_recipients_ptr: *mut *mut u8,
+    out_recipients_len: *mut usize,
     out_exporter_ptr: *mut *mut u8,
     out_exporter_len: *mut usize,
 ) -> i32 {
@@ -174,12 +179,12 @@ pub unsafe fn add_member(
         Err(msg) => return fail(ErrorCode::NullArgument, msg),
     };
 
-    let kp_bundle = match unsafe { input_slice(keypackage_bundle_ptr, keypackage_bundle_len) } {
+    let blob = match unsafe { input_slice(keypackage_blob_ptr, keypackage_blob_len) } {
         Some(s) => s,
-        None => return fail(ErrorCode::NullArgument, "keypackage bundle pointer is null"),
+        None => return fail(ErrorCode::NullArgument, "keypackage blob pointer is null"),
     };
 
-    // Load the founder's signature keys.
+    // Load the committer's signature keys.
     let group_state = match provider.groups.get(&group_id) {
         Some(s) => s,
         None => return fail(ErrorCode::UnknownGroupId, "no such group"),
@@ -190,27 +195,15 @@ pub unsafe fn add_member(
         Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize SignatureKeyPair: {e:?}")),
     };
 
-    // Decode the inbound KeyPackage MLSMessage.
-    let mut cursor = kp_bundle;
-    let kp_message = match MlsMessageIn::tls_deserialize(&mut cursor) {
-        Ok(m) => m,
-        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize MLSMessage(KeyPackage): {e:?}")),
-    };
-    let kp_in = match kp_message.extract() {
-        MlsMessageBodyIn::KeyPackage(kp) => kp,
-        _ => return fail(ErrorCode::InvalidWireFormat, "expected MLSMessage(KeyPackage)"),
-    };
-    let kp = match kp_in.validate(provider.crypto.crypto(), ProtocolVersion::Mls10) {
-        Ok(k) => k,
-        Err(e) => return set_last_error(ErrorCode::CryptoFailure, format!("KeyPackage validation: {e:?}")),
+    // Decode the inbound KeyPackage blob.
+    let (key_packages, recipient_identities) = match decode_keypackage_blob(blob, &provider.crypto) {
+        Ok(v) => v,
+        Err((code, msg)) => return fail(code, msg),
     };
 
-    // Identity of the recipient (for the WelcomeToSend tuple).
-    let recipient_credential = kp.leaf_node().credential();
-    let recipient_identity = match BasicCredential::try_from(recipient_credential.clone()) {
-        Ok(b) => b.identity().to_vec(),
-        Err(e) => return fail(ErrorCode::SerializationFailure, format!("decode BasicCredential: {e:?}")),
-    };
+    if key_packages.is_empty() {
+        return fail(ErrorCode::InvalidArgument, "must add at least one member");
+    }
 
     // Load the live group from storage.
     let group_id_obj = GroupId::from_slice(&group_id);
@@ -221,11 +214,11 @@ pub unsafe fn add_member(
             Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
         };
 
-    // Issue the Add proposal + Commit.
+    // Issue the Add proposals + Commit.
     let (commit_msg, welcome_msg, _group_info) = match group.add_members(
         &provider.crypto,
         &signature_keys,
-        &[kp],
+        &key_packages,
     ) {
         Ok(t) => t,
         Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("add_members: {e:?}")),
@@ -242,6 +235,19 @@ pub unsafe fn add_member(
         Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("export_secret: {e:?}")),
     };
 
+    // Encode recipients: u32 BE count + N * 32-byte identities.
+    let mut recipient_identity = Vec::with_capacity(4 + 32 * recipient_identities.len());
+    recipient_identity.extend_from_slice(&(recipient_identities.len() as u32).to_be_bytes());
+    for id in &recipient_identities {
+        if id.len() != 32 {
+            return fail(
+                ErrorCode::Unsupported,
+                format!("recipient identity must be 32 bytes (got {})", id.len()),
+            );
+        }
+        recipient_identity.extend_from_slice(id);
+    }
+
     let commit_bytes = match commit_msg.tls_serialize_detached() {
         Ok(b) => b,
         Err(e) => return fail(ErrorCode::SerializationFailure, format!("serialize Commit: {e:?}")),
@@ -254,10 +260,61 @@ pub unsafe fn add_member(
     unsafe {
         return_ffi_buffer(commit_bytes, out_commit_ptr, out_commit_len);
         return_ffi_buffer(welcome_bytes, out_welcome_ptr, out_welcome_len);
-        return_ffi_buffer(recipient_identity, out_recipient_ptr, out_recipient_len);
+        return_ffi_buffer(recipient_identity, out_recipients_ptr, out_recipients_len);
         return_ffi_buffer(exporter, out_exporter_ptr, out_exporter_len);
     }
     ErrorCode::Success as i32
+}
+
+/// Decode the length-prefixed blob format `[u32 BE count] [u32 BE len_0]
+/// [bytes_0] ...` into a Vec<KeyPackage>, validating each. Also returns
+/// the parallel list of recipient identity bytes.
+fn decode_keypackage_blob(
+    blob: &[u8],
+    crypto: &openmls_rust_crypto::OpenMlsRustCrypto,
+) -> Result<(Vec<KeyPackage>, Vec<Vec<u8>>), (ErrorCode, String)> {
+    if blob.len() < 4 {
+        return Err((ErrorCode::InvalidArgument, "keypackage blob too short".into()));
+    }
+    let count = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+    let mut cursor = 4usize;
+    let mut kps = Vec::with_capacity(count);
+    let mut identities = Vec::with_capacity(count);
+
+    for i in 0..count {
+        if cursor + 4 > blob.len() {
+            return Err((ErrorCode::InvalidArgument, format!("blob truncated at entry {i} length")));
+        }
+        let len = u32::from_be_bytes([blob[cursor], blob[cursor + 1], blob[cursor + 2], blob[cursor + 3]]) as usize;
+        cursor += 4;
+        if cursor + len > blob.len() {
+            return Err((ErrorCode::InvalidArgument, format!("blob truncated at entry {i} body")));
+        }
+        let kp_bytes = &blob[cursor..cursor + len];
+        cursor += len;
+
+        let mut c = kp_bytes;
+        let kp_message = MlsMessageIn::tls_deserialize(&mut c)
+            .map_err(|e| (ErrorCode::SerializationFailure, format!("deserialize MLSMessage(KeyPackage) #{i}: {e:?}")))?;
+        let kp_in = match kp_message.extract() {
+            MlsMessageBodyIn::KeyPackage(k) => k,
+            _ => return Err((ErrorCode::InvalidWireFormat, format!("entry {i} is not MLSMessage(KeyPackage)"))),
+        };
+        let kp = kp_in
+            .validate(crypto.crypto(), ProtocolVersion::Mls10)
+            .map_err(|e| (ErrorCode::CryptoFailure, format!("KeyPackage #{i} validation: {e:?}")))?;
+
+        let credential = kp.leaf_node().credential().clone();
+        let identity = match BasicCredential::try_from(credential) {
+            Ok(b) => b.identity().to_vec(),
+            Err(e) => return Err((ErrorCode::SerializationFailure, format!("decode BasicCredential #{i}: {e:?}"))),
+        };
+
+        kps.push(kp);
+        identities.push(identity);
+    }
+
+    Ok((kps, identities))
 }
 
 /// Process an inbound Welcome and join the group.

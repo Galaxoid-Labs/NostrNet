@@ -75,14 +75,14 @@ internal static partial class NativeBindings
         ushort ciphersuite,
         IntPtr* outExporterPtr, nuint* outExporterLen);
 
-    [LibraryImport(Library, EntryPoint = "marmot_add_member")]
-    public static unsafe partial int AddMember(
+    [LibraryImport(Library, EntryPoint = "marmot_add_members")]
+    public static unsafe partial int AddMembers(
         IntPtr provider,
         byte* nostrGroupIdPtr,
-        byte* keypackageBundlePtr, nuint keypackageBundleLen,
+        byte* keypackageBlobPtr, nuint keypackageBlobLen,
         IntPtr* outCommitPtr, nuint* outCommitLen,
         IntPtr* outWelcomePtr, nuint* outWelcomeLen,
-        IntPtr* outRecipientPtr, nuint* outRecipientLen,
+        IntPtr* outRecipientsPtr, nuint* outRecipientsLen,
         IntPtr* outExporterPtr, nuint* outExporterLen);
 
     [LibraryImport(Library, EntryPoint = "marmot_join_from_welcome")]

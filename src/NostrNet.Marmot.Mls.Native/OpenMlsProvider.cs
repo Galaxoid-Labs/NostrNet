@@ -187,30 +187,43 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
             throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(nostrGroupId));
         }
 
-        if (keyPackageBundles.Count != 1)
+        if (keyPackageBundles.Count == 0)
         {
-            throw new NotSupportedException(
-                $"Phase 1 supports adding exactly one member; got {keyPackageBundles.Count}.");
+            throw new ArgumentException("must add at least one member", nameof(keyPackageBundles));
         }
 
-        var kp = keyPackageBundles[0].Span;
+        // Encode the length-prefixed blob: [u32 BE count] [u32 BE len_0] [bytes_0] ...
+        int blobSize = 4;
+        foreach (var b in keyPackageBundles)
+        {
+            blobSize += 4 + b.Length;
+        }
+
+        byte[] blob = new byte[blobSize];
+        int p = 0;
+        WriteUInt32BigEndian(blob, p, (uint)keyPackageBundles.Count); p += 4;
+        foreach (var b in keyPackageBundles)
+        {
+            WriteUInt32BigEndian(blob, p, (uint)b.Length); p += 4;
+            b.Span.CopyTo(blob.AsSpan(p, b.Length)); p += b.Length;
+        }
 
         IntPtr commitPtr = IntPtr.Zero; nuint commitLen = 0;
         IntPtr welcomePtr = IntPtr.Zero; nuint welcomeLen = 0;
-        IntPtr recipientPtr = IntPtr.Zero; nuint recipientLen = 0;
+        IntPtr recipientsPtr = IntPtr.Zero; nuint recipientsLen = 0;
         IntPtr exporterPtr = IntPtr.Zero; nuint exporterLen = 0;
 
         int rc;
         fixed (byte* gidPin = nostrGroupId.Span)
-        fixed (byte* kpPin = kp)
+        fixed (byte* blobPin = blob)
         {
-            rc = NativeBindings.AddMember(
+            rc = NativeBindings.AddMembers(
                 _handle.DangerousPointer,
                 gidPin,
-                kpPin, (nuint)kp.Length,
+                blobPin, (nuint)blob.Length,
                 &commitPtr, &commitLen,
                 &welcomePtr, &welcomeLen,
-                &recipientPtr, &recipientLen,
+                &recipientsPtr, &recipientsLen,
                 &exporterPtr, &exporterLen);
         }
 
@@ -221,24 +234,56 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
 
         byte[] commit = FfiBuffer.CopyAndFree(commitPtr, commitLen);
         byte[] welcome = FfiBuffer.CopyAndFree(welcomePtr, welcomeLen);
-        byte[] recipient = FfiBuffer.CopyAndFree(recipientPtr, recipientLen);
+        byte[] recipientsBlob = FfiBuffer.CopyAndFree(recipientsPtr, recipientsLen);
         byte[] exporter = FfiBuffer.CopyAndFree(exporterPtr, exporterLen);
 
-        if (recipient.Length != 32)
+        // Decode recipients: [u32 BE count] [32 bytes id_0] ...
+        if (recipientsBlob.Length < 4)
+        {
+            throw new InvalidDataException("recipients blob too short");
+        }
+
+        uint recipientCount = ReadUInt32BigEndian(recipientsBlob, 0);
+        if (recipientsBlob.Length != 4 + 32 * recipientCount)
         {
             throw new InvalidDataException(
-                $"recipient identity must be 32 bytes; got {recipient.Length}.");
+                $"recipients blob has unexpected length {recipientsBlob.Length} for count {recipientCount}");
+        }
+
+        var welcomes = new WelcomeToSend[recipientCount];
+        for (int i = 0; i < recipientCount; i++)
+        {
+            byte[] id = new byte[32];
+            Array.Copy(recipientsBlob, 4 + 32 * i, id, 0, 32);
+            // For a single Add+Commit, the SAME Welcome bytes carry
+            // EncryptedGroupSecrets for every new member. Each WelcomeToSend
+            // points at the same bytes; the recipient-specific routing
+            // happens at the NIP-59 gift-wrap layer.
+            welcomes[i] = new WelcomeToSend(
+                RecipientPubkey: new PublicKey(id),
+                WelcomeMlsMessageBytes: welcome);
         }
 
         return Task.FromResult(new AddMembersResult(
             CommitMlsMessageBytes: commit,
-            Welcomes: new[]
-            {
-                new WelcomeToSend(
-                    RecipientPubkey: new PublicKey(recipient),
-                    WelcomeMlsMessageBytes: welcome),
-            },
+            Welcomes: welcomes,
             NewExporterSecret: exporter));
+    }
+
+    private static void WriteUInt32BigEndian(byte[] buf, int offset, uint value)
+    {
+        buf[offset + 0] = (byte)(value >> 24);
+        buf[offset + 1] = (byte)(value >> 16);
+        buf[offset + 2] = (byte)(value >> 8);
+        buf[offset + 3] = (byte)value;
+    }
+
+    private static uint ReadUInt32BigEndian(byte[] buf, int offset)
+    {
+        return ((uint)buf[offset + 0] << 24)
+             | ((uint)buf[offset + 1] << 16)
+             | ((uint)buf[offset + 2] << 8)
+             | buf[offset + 3];
     }
 
     /// <inheritdoc/>

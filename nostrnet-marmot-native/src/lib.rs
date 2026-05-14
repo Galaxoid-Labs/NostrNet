@@ -203,36 +203,36 @@ pub unsafe extern "C" fn marmot_create_group(
 }
 
 /// # Safety
-/// See `group::add_member`.
+/// See `group::add_members`.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn marmot_add_member(
+pub unsafe extern "C" fn marmot_add_members(
     provider: *mut Provider,
     nostr_group_id_ptr: *const u8,
-    keypackage_bundle_ptr: *const u8,
-    keypackage_bundle_len: usize,
+    keypackage_blob_ptr: *const u8,
+    keypackage_blob_len: usize,
     out_commit_ptr: *mut *mut u8,
     out_commit_len: *mut usize,
     out_welcome_ptr: *mut *mut u8,
     out_welcome_len: *mut usize,
-    out_recipient_ptr: *mut *mut u8,
-    out_recipient_len: *mut usize,
+    out_recipients_ptr: *mut *mut u8,
+    out_recipients_len: *mut usize,
     out_exporter_ptr: *mut *mut u8,
     out_exporter_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
     unsafe {
-        group::add_member(
+        group::add_members(
             provider,
             nostr_group_id_ptr,
-            keypackage_bundle_ptr,
-            keypackage_bundle_len,
+            keypackage_blob_ptr,
+            keypackage_blob_len,
             out_commit_ptr,
             out_commit_len,
             out_welcome_ptr,
             out_welcome_len,
-            out_recipient_ptr,
-            out_recipient_len,
+            out_recipients_ptr,
+            out_recipients_len,
             out_exporter_ptr,
             out_exporter_len,
         )

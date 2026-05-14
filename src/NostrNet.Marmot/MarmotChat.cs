@@ -52,6 +52,51 @@ public sealed record MarmotConversationStarted(
     MarmotConversation Conversation,
     NostrEvent WelcomeGiftWrap);
 
+/// <summary>The output of <see cref="MarmotChat.StartGroupAsync"/>.</summary>
+/// <param name="Conversation">Handle to the freshly created group.</param>
+/// <param name="WelcomeGiftWraps">One NIP-59 gift wrap per initial member. Publish each to that recipient's inbox relays.</param>
+public sealed record MarmotGroupStarted(
+    MarmotConversation Conversation,
+    IReadOnlyList<NostrEvent> WelcomeGiftWraps);
+
+/// <summary>The output of <see cref="MarmotChat.AddPeerAsync"/>.</summary>
+/// <param name="WelcomeGiftWrap">NIP-59 gift wrap for the new peer.</param>
+/// <param name="CommitGroupEvent">
+/// kind-445 GroupEvent carrying the MLS Commit, encrypted with the
+/// previous epoch's exporter so existing members can still decrypt it.
+/// Publish to the group's relays.
+/// </param>
+public sealed record MarmotPeerAdded(
+    NostrEvent WelcomeGiftWrap,
+    NostrEvent CommitGroupEvent);
+
+/// <summary>Classification of an inbound MLS message after decryption + processing.</summary>
+public enum MarmotMessageKind
+{
+    /// <summary>Application data — <see cref="MarmotInboundMessage.Plaintext"/> is populated.</summary>
+    Application,
+
+    /// <summary>An MLS Commit — the group's epoch has advanced.</summary>
+    Commit,
+
+    /// <summary>An MLS Proposal — queued, not yet committed.</summary>
+    Proposal,
+}
+
+/// <summary>The result of decrypting and processing one inbound kind-445.</summary>
+/// <param name="Kind">What kind of MLS message was processed.</param>
+/// <param name="Plaintext">For <see cref="MarmotMessageKind.Application"/>, the decrypted plaintext (UTF-8). Null otherwise.</param>
+/// <param name="EpochAdvanced">
+/// <c>true</c> if the group's epoch advanced as a result of processing
+/// this message. Callers should treat any cached exporter secret as
+/// stale; <see cref="MarmotChat.EncryptMessageAsync"/> always fetches
+/// the live exporter so existing code keeps working.
+/// </param>
+public sealed record MarmotInboundMessage(
+    MarmotMessageKind Kind,
+    string? Plaintext,
+    bool EpochAdvanced);
+
 /// <summary>High-level helpers for one-to-one Marmot conversations.</summary>
 public static class MarmotChat
 {
@@ -294,6 +339,206 @@ public static class MarmotChat
     {
         string? text = await TryDecryptMessageAsync(provider, conversation, groupEvent, ct).ConfigureAwait(false);
         return (text is not null, text);
+    }
+
+    /// <summary>
+    /// Like <see cref="TryDecryptMessageAsync"/>, but exposes the MLS
+    /// message classification — so callers can react to inbound Commits
+    /// (group state changes) as well as application messages. Returns
+    /// <c>null</c> on any decrypt / parse failure.
+    /// </summary>
+    public static async Task<MarmotInboundMessage?> TryProcessMessageAsync(
+        IMarmotMlsProvider provider,
+        MarmotConversation conversation,
+        NostrEvent groupEvent,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        ArgumentNullException.ThrowIfNull(conversation);
+        ArgumentNullException.ThrowIfNull(groupEvent);
+
+        if (groupEvent.Kind != MarmotKinds.GroupEvent)
+        {
+            return null;
+        }
+
+        byte[] exporter;
+        try
+        {
+            exporter = await provider.CurrentExporterSecretAsync(
+                conversation.NostrGroupId, ct).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+
+        if (!GroupEvent.TryDecrypt(groupEvent, exporter, out var decrypted))
+        {
+            return null;
+        }
+
+        ProcessedMlsMessage processed;
+        try
+        {
+            processed = await provider.ProcessIncomingMlsMessageAsync(
+                conversation.NostrGroupId,
+                decrypted.MlsMessageBytes,
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException
+                                     or System.IO.InvalidDataException
+                                     or InvalidOperationException)
+        {
+            return null;
+        }
+
+        var kind = processed.Kind switch
+        {
+            MlsMessageKind.Application => MarmotMessageKind.Application,
+            MlsMessageKind.Commit => MarmotMessageKind.Commit,
+            MlsMessageKind.Proposal => MarmotMessageKind.Proposal,
+            _ => MarmotMessageKind.Application,
+        };
+
+        string? plaintext = kind == MarmotMessageKind.Application
+            ? SysEncoding.UTF8.GetString(processed.ApplicationPayload)
+            : null;
+
+        return new MarmotInboundMessage(kind, plaintext, processed.EpochAdvanced);
+    }
+
+    /// <summary>
+    /// Founder bootstrap for a group with multiple initial members. Creates
+    /// the MLS group, adds all peers in one Commit, and produces one
+    /// NIP-59 gift wrap per peer. There is no separate Commit broadcast
+    /// because at creation time there are no existing members to inform.
+    /// </summary>
+    public static async Task<MarmotGroupStarted> StartGroupAsync(
+        IMarmotMlsProvider provider,
+        PrivateKey myKey,
+        IReadOnlyList<NostrEvent> peerKeyPackageEvents,
+        string? conversationName,
+        IReadOnlyList<string> relays,
+        ushort ciphersuite = DefaultCiphersuite,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        ArgumentNullException.ThrowIfNull(myKey);
+        ArgumentNullException.ThrowIfNull(peerKeyPackageEvents);
+        ArgumentNullException.ThrowIfNull(relays);
+
+        if (peerKeyPackageEvents.Count == 0)
+        {
+            throw new ArgumentException("group must have at least one initial peer", nameof(peerKeyPackageEvents));
+        }
+
+        var peerKps = new KeyPackageEvent[peerKeyPackageEvents.Count];
+        var bundles = new ReadOnlyMemory<byte>[peerKeyPackageEvents.Count];
+        for (int i = 0; i < peerKeyPackageEvents.Count; i++)
+        {
+            peerKps[i] = KeyPackageEvent.FromEvent(peerKeyPackageEvents[i]);
+            bundles[i] = peerKps[i].KeyPackageBundleBytes;
+        }
+
+        byte[] groupId = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(groupId);
+
+        var groupData = new MarmotGroupDataExtension
+        {
+            NostrGroupId = groupId,
+            Name = conversationName ?? string.Empty,
+            AdminPubkeys = new[] { myKey.PublicKey },
+            Relays = relays,
+        };
+
+        await provider.CreateGroupAsync(myKey.PublicKey, groupData, ciphersuite, ct).ConfigureAwait(false);
+
+        var add = await provider.AddMembersAsync(groupId, bundles, ct).ConfigureAwait(false);
+
+        if (add.Welcomes.Count != peerKps.Length)
+        {
+            throw new InvalidOperationException(
+                $"expected {peerKps.Length} welcome entries; got {add.Welcomes.Count}.");
+        }
+
+        var giftWraps = new NostrEvent[peerKps.Length];
+        for (int i = 0; i < peerKps.Length; i++)
+        {
+            giftWraps[i] = WelcomeEvent.Build(
+                mlsWelcomeBytes: add.Welcomes[i].WelcomeMlsMessageBytes,
+                keyPackageEventId: peerKeyPackageEvents[i].Id.ToHex(),
+                senderKey: myKey,
+                recipientPubkey: peerKps[i].Author,
+                recommendedRelays: relays);
+        }
+
+        // Use the first peer as the conversation's "Peer" for the
+        // MarmotConversation handle. The handle is only used for
+        // exporter/group-id lookup; per-peer info lives elsewhere.
+        return new MarmotGroupStarted(
+            Conversation: new MarmotConversation(groupId, peerKps[0].Author),
+            WelcomeGiftWraps: giftWraps);
+    }
+
+    /// <summary>
+    /// Adds a new peer to an existing conversation. Captures the current
+    /// epoch's exporter BEFORE issuing the Add (so existing members can
+    /// still decrypt the Commit GroupEvent), then advances the group.
+    /// </summary>
+    /// <returns>
+    /// A NIP-59 Welcome gift wrap for the new peer AND a kind-445
+    /// GroupEvent carrying the Commit MLSMessage encrypted with the
+    /// previous epoch's exporter. Both should be published.
+    /// </returns>
+    public static async Task<MarmotPeerAdded> AddPeerAsync(
+        IMarmotMlsProvider provider,
+        PrivateKey myKey,
+        MarmotConversation conversation,
+        NostrEvent peerKeyPackageEvent,
+        IReadOnlyList<string> relays,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        ArgumentNullException.ThrowIfNull(myKey);
+        ArgumentNullException.ThrowIfNull(conversation);
+        ArgumentNullException.ThrowIfNull(peerKeyPackageEvent);
+        ArgumentNullException.ThrowIfNull(relays);
+
+        var peerKp = KeyPackageEvent.FromEvent(peerKeyPackageEvent);
+
+        // Capture the CURRENT epoch's exporter so existing members can
+        // still decrypt the Commit GroupEvent we're about to broadcast.
+        byte[] oldExporter = await provider
+            .CurrentExporterSecretAsync(conversation.NostrGroupId, ct)
+            .ConfigureAwait(false);
+
+        var add = await provider.AddMembersAsync(
+            conversation.NostrGroupId,
+            new ReadOnlyMemory<byte>[] { peerKp.KeyPackageBundleBytes },
+            ct).ConfigureAwait(false);
+
+        if (add.Welcomes.Count != 1)
+        {
+            throw new InvalidOperationException(
+                $"expected exactly one welcome from a single-peer Add; got {add.Welcomes.Count}.");
+        }
+
+        var welcomeGiftWrap = WelcomeEvent.Build(
+            mlsWelcomeBytes: add.Welcomes[0].WelcomeMlsMessageBytes,
+            keyPackageEventId: peerKeyPackageEvent.Id.ToHex(),
+            senderKey: myKey,
+            recipientPubkey: peerKp.Author,
+            recommendedRelays: relays);
+
+        // The Commit GroupEvent is encrypted with the OLD exporter so
+        // existing members (still at the previous epoch) can decrypt it.
+        var commitGroupEvent = GroupEvent.Build(
+            mlsMessageBytes: add.CommitMlsMessageBytes,
+            exporterSecret: oldExporter,
+            nostrGroupId: conversation.NostrGroupId);
+
+        return new MarmotPeerAdded(welcomeGiftWrap, commitGroupEvent);
     }
 
     /// <summary>
