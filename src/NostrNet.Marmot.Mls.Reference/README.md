@@ -39,6 +39,10 @@ Useful as:
   simplified subset of RFC 9420 §6.3 + §15 (no sender-data encryption,
   no ciphersuite-sample binding, no reuse_guard) and a private-use wire
   format (`0xFE02`); see `Wire/ApplicationMessage.cs`.
+- **Standard MLSMessage envelope** for KeyPackage and Welcome bytes
+  (RFC 9420 §6.1): `uint16(version) || uint16(wire_format) || body`.
+  This is the form Marmot kind-30443 and the Welcome rumor content
+  carry on the wire, and is parseable by any RFC-9420 MLS library.
 
 ## What's NOT supported
 
@@ -46,8 +50,10 @@ These all throw `NotSupportedException`:
 
 - Groups with more than two members (no TreeKEM at depth > 1).
 - Member removal, Update proposals, PSK injections, ReInit, external joins.
-- Interop with OpenMLS or any other RFC 9420 implementation. Two
-  intentional simplifications make this self-interop only:
+- Interop with OpenMLS or any other RFC 9420 implementation. Several
+  intentional simplifications make this self-interop only (KeyPackage
+  and Welcome bytes are now MLSMessage-wrapped, but the deeper layers
+  still diverge):
   1. `confirmed_transcript_hash` is the empty byte string (no real
      transcript hashing across Commits).
   2. The founder's leaf travels in a **private-use** extension type

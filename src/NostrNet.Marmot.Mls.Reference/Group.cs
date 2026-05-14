@@ -368,7 +368,9 @@ internal sealed class ReferenceMlsGroup
         Secrets = secrets1;
         MemberLeaf = memberLeaf;
 
-        return welcome.Encode();
+        // Per RFC 9420 §6.1, wire bytes for a Welcome are an MLSMessage
+        // envelope with wire_format = mls_welcome.
+        return MlsMessage.EncodeWelcome(welcome);
     }
 
     /// <summary>
@@ -392,7 +394,7 @@ internal sealed class ReferenceMlsGroup
         ArgumentNullException.ThrowIfNull(myInitPrivateKey);
         ArgumentNullException.ThrowIfNull(mySignaturePrivateKey);
 
-        var welcome = Welcome.Decode(welcomeBytes);
+        var welcome = MlsMessage.DecodeWelcome(welcomeBytes);
         if (welcome.Ciphersuite != CiphersuiteInfo.Supported)
         {
             throw new NotSupportedException($"Welcome ciphersuite 0x{(ushort)welcome.Ciphersuite:X4} not supported.");

@@ -79,7 +79,7 @@ public sealed class ReferenceMarmotMlsProvider : IMarmotMlsProvider
         _keyPackages[kpRefHex] = new KeyPackageState(kp, identityPubkey, sigSk, initSk, encSk);
 
         return Task.FromResult(new KeyPackageBundle(
-            BundleBytes: kp.Encode(),
+            BundleBytes: MlsMessage.EncodeKeyPackage(kp),
             Ciphersuite: ciphersuite,
             ProtocolVersion: "1.0",
             KeyPackageRef: kpRefHex));
@@ -90,7 +90,7 @@ public sealed class ReferenceMarmotMlsProvider : IMarmotMlsProvider
         ReadOnlyMemory<byte> keyPackageBundleBytes,
         CancellationToken ct = default)
     {
-        var kp = KeyPackage.Decode(keyPackageBundleBytes.Span);
+        var kp = MlsMessage.DecodeKeyPackage(keyPackageBundleBytes.Span);
         if (!kp.Verify())
         {
             throw new System.Security.Cryptography.CryptographicException("KeyPackage signature is invalid.");
@@ -174,7 +174,7 @@ public sealed class ReferenceMarmotMlsProvider : IMarmotMlsProvider
             throw new InvalidOperationException("No group with the given nostrGroupId is loaded in this provider.");
         }
 
-        var kp = KeyPackage.Decode(keyPackageBundles[0].Span);
+        var kp = MlsMessage.DecodeKeyPackage(keyPackageBundles[0].Span);
         if (!kp.Verify())
         {
             throw new System.Security.Cryptography.CryptographicException("Added member's KeyPackage signature is invalid.");
@@ -206,7 +206,7 @@ public sealed class ReferenceMarmotMlsProvider : IMarmotMlsProvider
         ReadOnlyMemory<byte> mlsWelcomeBytes,
         CancellationToken ct = default)
     {
-        var welcome = Welcome.Decode(mlsWelcomeBytes.Span);
+        var welcome = MlsMessage.DecodeWelcome(mlsWelcomeBytes.Span);
 
         // Look up the local KeyPackage that matches one of the
         // EncryptedGroupSecrets entries.
