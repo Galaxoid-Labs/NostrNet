@@ -146,12 +146,18 @@ public static class MarmotChat
         ArgumentNullException.ThrowIfNull(myKey);
         ArgumentNullException.ThrowIfNull(relays);
 
-        // MIP-00 mandates the `d` tag be exactly 64 hex chars (32 random
-        // bytes). Callers that pass null/empty get a fresh random slot;
-        // callers that pass a 64-char hex string get to rotate that
-        // specific slot. Anything else is rejected because mdk-core /
-        // White Noise refuse to parse it.
-        slot = NormalizeKeyPackageSlot(slot);
+        // MIP-00 mandates the `d` tag be exactly 64 hex chars. Callers
+        // that pass null/empty get a deterministic slot derived from
+        // their identity pubkey — this is the "default device" slot,
+        // and re-publishing under the same slot replaces the previous
+        // KeyPackage on relays. Without slot stability, each run
+        // creates a brand-new addressable event and old KeyPackages
+        // (with init keys that have since been wiped from local state)
+        // accumulate on the relay, causing inviters to encrypt
+        // Welcomes against unreachable init keys → NoMatchingKeyPackage
+        // when we try to join. Callers that want a separate slot
+        // (e.g. per-device) supply their own 64-char hex.
+        slot = NormalizeKeyPackageSlot(slot, myKey.PublicKey);
 
         // The Rust crate hardcodes the Marmot baseline capabilities
         // (LastResort + NostrGroupData extensions, SelfRemove proposal)
@@ -195,13 +201,23 @@ public static class MarmotChat
     /// <c>peerKeyPackageEvent</c>. Creates a new MLS group, adds the
     /// peer, and gift-wraps the resulting Welcome for delivery.
     /// </summary>
-    private static string NormalizeKeyPackageSlot(string? slot)
+    private static string NormalizeKeyPackageSlot(string? slot, PublicKey identityPubkey)
     {
         if (string.IsNullOrEmpty(slot))
         {
-            byte[] random = new byte[32];
-            System.Security.Cryptography.RandomNumberGenerator.Fill(random);
-            return Convert.ToHexStringLower(random);
+            // Deterministic default slot per identity. The hash domain
+            // separator plus the pubkey produces a 32-byte slot id
+            // that's the same across every run for this identity — so
+            // re-publishing replaces the prior event under
+            // (kind, pubkey, d) rather than creating yet another
+            // orphan slot.
+            ReadOnlySpan<byte> domain = "marmot/keypackage-default-slot/v1"u8;
+            Span<byte> input = stackalloc byte[domain.Length + 32];
+            domain.CopyTo(input);
+            identityPubkey.CopyTo(input[domain.Length..]);
+            Span<byte> hash = stackalloc byte[32];
+            System.Security.Cryptography.SHA256.HashData(input, hash);
+            return Convert.ToHexStringLower(hash);
         }
 
         if (slot.Length != 64 || !IsHex(slot))
