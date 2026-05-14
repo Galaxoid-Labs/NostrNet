@@ -1,0 +1,33 @@
+[package]
+name = "nostrnet-marmot-native"
+version = "0.1.0"
+edition = "2024"
+description = "C ABI wrapping openmls for use by NostrNet.Marmot.Mls.Native"
+license = "MIT"
+publish = false
+
+[lib]
+# cdylib produces the .so / .dylib / .dll that the .NET P/Invoke layer
+# loads at runtime. crate-type also includes "rlib" so unit tests in
+# the crate itself can link against the library.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openmls = "0.8"
+openmls_rust_crypto = "0.5"
+openmls_traits = "0.5"
+openmls_basic_credential = "0.4"
+openmls_memory_storage = "0.5"
+tls_codec = "0.4"
+
+[profile.release]
+# OpenMLS pulls in a lot of dependencies; opt-level=3 + LTO keeps the
+# binary tractable.
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

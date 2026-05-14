@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NostrNet.Marmot.Mls.Native</RootNamespace>
+    <AssemblyName>NostrNet.Marmot.Mls.Native</AssemblyName>
+    <Description>OpenMLS-backed IMarmotMlsProvider for Marmot. Cross-process interop with any RFC 9420 MLS implementation. Native binary is built from the in-tree nostrnet-marmot-native Rust crate.</Description>
+    <PackageTags>nostr;marmot;mls;rfc-9420;openmls;ffi</PackageTags>
+
+    <!-- The Rust bridge does its own (un)safety; we surface its surface via LibraryImport. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Cargo crate location + profile selection. -->
+    <CargoCrateDir>$(MSBuildThisFileDirectory)..\..\nostrnet-marmot-native</CargoCrateDir>
+    <CargoProfile Condition="'$(Configuration)' == 'Release'">release</CargoProfile>
+    <CargoProfile Condition="'$(CargoProfile)' == ''">debug</CargoProfile>
+
+    <NativeLibName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libnostrnet_marmot_native.dylib</NativeLibName>
+    <NativeLibName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libnostrnet_marmot_native.so</NativeLibName>
+    <NativeLibName Condition="$([MSBuild]::IsOSPlatform('Windows'))">nostrnet_marmot_native.dll</NativeLibName>
+    <NativeLibPath>$(CargoCrateDir)\target\$(CargoProfile)\$(NativeLibName)</NativeLibPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NostrNet.Core\NostrNet.Core.csproj" />
+    <ProjectReference Include="..\NostrNet.Crypto\NostrNet.Crypto.csproj" />
+    <ProjectReference Include="..\NostrNet.Marmot\NostrNet.Marmot.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NostrNet.Marmot.Mls.Native.Tests" />
+  </ItemGroup>
+
+  <!--
+    Phase 1: invoke `cargo build` before the rest of the build. The
+    native lib is then declared as Content (via the InjectNativeLib
+    target below) so it propagates to consuming projects' bin output.
+    Cross-compilation + multi-RID NuGet packaging is phase 2.
+  -->
+  <Target Name="CargoBuild" BeforeTargets="BeforeBuild;BeforeResolveReferences">
+    <PropertyGroup>
+      <CargoBuildFlag Condition="'$(CargoProfile)' == 'release'">--release</CargoBuildFlag>
+    </PropertyGroup>
+    <Message Text="Building Rust crate ($(CargoProfile))…" Importance="high" />
+    <Exec Command="cargo build $(CargoBuildFlag)" WorkingDirectory="$(CargoCrateDir)" />
+  </Target>
+
+  <Target Name="InjectNativeLib"
+          AfterTargets="CargoBuild"
+          BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <Content Include="$(NativeLibPath)"
+               Link="$(NativeLibName)"
+               Visible="false">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </Content>
+    </ItemGroup>
+  </Target>
+
+</Project>
