@@ -28,7 +28,7 @@ using NostrNet.Client;
 using NostrNet.Events;
 using NostrNet.Keys;
 using NostrNet.Marmot;
-using NostrNet.Marmot.Mls.Reference;
+using NostrNet.Marmot.Mls.Native;
 using NostrNet.Relay;
 
 string[] DefaultRelays =
@@ -369,17 +369,16 @@ void PrintUsage()
     Console.Error.WriteLine("  marmot-mls-smoke                     experimental: in-tree MLS two-member round-trip smoke test");
 }
 
-// Drives the full Marmot + reference-MLS 1:1 chat flow end-to-end without
+// Drives the full Marmot + OpenMLS 1:1 chat flow end-to-end without
 // touching the network. Useful both as a demo of the MarmotChat helper
-// and as the AOT-publish smoke test for the BouncyCastle-backed MLS
-// reference provider.
+// and as the AOT-publish smoke test for the OpenMLS-backed MLS provider.
 async Task<int> MarmotMlsSmokeAsync()
 {
     using var aliceKey = PrivateKey.Generate();
     using var bobKey = PrivateKey.Generate();
 
-    var aliceProv = new ReferenceMarmotMlsProvider();
-    var bobProv = new ReferenceMarmotMlsProvider();
+    using var aliceProv = new OpenMlsProvider();
+    using var bobProv = new OpenMlsProvider();
     var relays = new[] { "wss://relay.example" };
 
     // Bob publishes his KeyPackage event (kind-30443). In a real app this

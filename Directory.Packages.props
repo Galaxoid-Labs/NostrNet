@@ -14,9 +14,6 @@
   <ItemGroup>
     <!-- Runtime dependencies -->
     <PackageVersion Include="NBitcoin.Secp256k1" Version="4.0.0" />
-    <!-- BouncyCastle: pure-managed Ed25519 / X25519 / HKDF / HPKE primitives for
-         the experimental NostrNet.Marmot.Mls.Reference provider. AOT-friendly. -->
-    <PackageVersion Include="BouncyCastle.Cryptography" Version="2.4.0" />
   </ItemGroup>
 
   <ItemGroup Label="Test dependencies">

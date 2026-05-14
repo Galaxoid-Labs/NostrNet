@@ -3,15 +3,12 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>NostrNet.Sample.Console</RootNamespace>
-    <!-- The marmot-mls-smoke subcommand opts in to the experimental
-         reference MLS provider; suppress NMARMOT0001 just for this app. -->
-    <NoWarn>$(NoWarn);NMARMOT0001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NostrNet.Client\NostrNet.Client.csproj" />
     <ProjectReference Include="..\..\src\NostrNet.Marmot\NostrNet.Marmot.csproj" />
-    <ProjectReference Include="..\..\src\NostrNet.Marmot.Mls.Reference\NostrNet.Marmot.Mls.Reference.csproj" />
+    <ProjectReference Include="..\..\src\NostrNet.Marmot.Mls.Native\NostrNet.Marmot.Mls.Native.csproj" />
   </ItemGroup>
 
 </Project>

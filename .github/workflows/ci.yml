@@ -29,6 +29,29 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # NostrNet.Marmot.Mls.Native wraps OpenMLS via an in-tree Rust crate
+      # (nostrnet-marmot-native/). Each matrix runner needs the Rust
+      # toolchain available so `cargo build` runs as part of the .NET build.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + git
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ hashFiles('nostrnet-marmot-native/Cargo.lock') }}
+
+      - name: Cache cargo target dir
+        uses: actions/cache@v5
+        with:
+          path: nostrnet-marmot-native/target
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('nostrnet-marmot-native/**/*.rs', 'nostrnet-marmot-native/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-
+
       - name: Cache NuGet packages
         uses: actions/cache@v5
         with:
@@ -58,6 +81,26 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + git
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-aot-${{ hashFiles('nostrnet-marmot-native/Cargo.lock') }}
+
+      - name: Cache cargo target dir
+        uses: actions/cache@v5
+        with:
+          path: nostrnet-marmot-native/target
+          key: cargo-aot-target-${{ hashFiles('nostrnet-marmot-native/**/*.rs', 'nostrnet-marmot-native/Cargo.lock') }}
+          restore-keys: |
+            cargo-aot-target-
+
       - name: Cache NuGet packages
         uses: actions/cache@v5
         with:
@@ -80,9 +123,8 @@ jobs:
           --runtime linux-x64
           -p:PublishAot=true
 
-      # Runtime smoke test of the AOT-compiled binary. Exercises the
-      # experimental NostrNet.Marmot.Mls.Reference path (BouncyCastle
-      # Ed25519/X25519, AES-GCM, HKDF, MLS key schedule). Failure at
+      # Runtime smoke test of the AOT-compiled binary. Drives the full
+      # 1:1 Marmot flow through OpenMLS via the FFI bridge. Failure at
       # runtime catches issues the analyzers can't predict.
       - name: Run MLS smoke test (AOT binary)
         run: ./samples/NostrNet.Sample.Console/bin/Release/net10.0/linux-x64/publish/NostrNet.Sample.Console marmot-mls-smoke

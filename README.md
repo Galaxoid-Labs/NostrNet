@@ -232,7 +232,7 @@ dotnet test
 | `NostrNet.Relay`  | WebSocket client, `RelayPool`, `Filter`, NIP-11 fetch, NIP-05 verify |
 | `NostrNet.Client` | High-level `NostrClient` façade |
 | `NostrNet.Marmot` | Marmot (MLS-over-Nostr) envelope: kind 30443 / 444 / 445, `IMarmotMlsProvider`, NIP-59 wrap of Welcomes |
-| `NostrNet.Marmot.Mls.Reference` | **Experimental** in-tree MLS provider (`NMARMOT0001`); single ciphersuite, two-member groups |
+| `NostrNet.Marmot.Mls.Native` | OpenMLS-backed `IMarmotMlsProvider` via in-tree Rust FFI (`nostrnet-marmot-native/`). RFC-9420 compliant wire bytes; requires the Rust toolchain to build from source. |
 
 For most apps, reference only `NostrNet.Client` — it pulls in everything you
 need transitively. Marmot lives in separate packages so callers who don't
@@ -1116,7 +1116,7 @@ dotnet run --project samples/NostrNet.Sample.Console -- vanity-npub alce
 # Vanity: pubkey hex ending with "dead"
 dotnet run --project samples/NostrNet.Sample.Console -- vanity-hex dead --suffix
 
-# Marmot + experimental MLS reference: in-tree Alice/Bob two-member smoke test
+# Marmot + OpenMLS: in-tree Alice/Bob 1:1 conversation smoke test
 dotnet run --project samples/NostrNet.Sample.Console -- marmot-mls-smoke
 ```
 

@@ -9,11 +9,10 @@ via the `IMarmotMlsProvider` interface.
 
 To actually run Marmot, pair this package with an MLS provider:
 
-- **`NostrNet.Marmot.Mls.Reference`** — an in-tree, experimental
-  pure-managed implementation supporting one ciphersuite and two-member
-  groups. Good for prototyping; not for production.
-- _(Planned)_ `NostrNet.Marmot.Mls.Native` — an FFI wrapper around
-  [openmls](https://github.com/openmls/openmls) for full MLS coverage.
+- **`NostrNet.Marmot.Mls.Native`** — OpenMLS-backed provider via an
+  in-tree Rust FFI bridge (`nostrnet-marmot-native/`). RFC-9420
+  compliant wire bytes, supports 1:1 conversations end-to-end.
+  Building from source requires the Rust toolchain on PATH.
 
 ## MIPs implemented
 
@@ -35,12 +34,10 @@ five async calls:
 
 ```csharp
 using NostrNet.Marmot;
-using NostrNet.Marmot.Mls.Reference;  // or your preferred provider
+using NostrNet.Marmot.Mls.Native;     // OpenMLS-backed provider
 using NostrNet.Keys;
 
-#pragma warning disable NMARMOT0001    // see Mls.Reference experimental note
-IMarmotMlsProvider provider = new ReferenceMarmotMlsProvider();
-#pragma warning restore NMARMOT0001
+using IMarmotMlsProvider provider = new OpenMlsProvider();
 
 using var myKey = PrivateKey.Generate();
 var myRelays = new[] { "wss://relay.example" };
@@ -82,10 +79,8 @@ using NostrNet.Marmot.Events;
 using NostrNet.Marmot.GroupData;
 using NostrNet.Keys;
 
-// Wire in your MLS provider of choice. For prototyping:
-//   #pragma warning disable NMARMOT0001
-IMarmotMlsProvider provider = new ReferenceMarmotMlsProvider();
-//   #pragma warning restore NMARMOT0001
+// Wire in your MLS provider of choice (OpenMLS-backed is the default).
+using IMarmotMlsProvider provider = new OpenMlsProvider();
 
 // ── Sender ("Alice") ────────────────────────────────────────────────
 using var alice = PrivateKey.Generate();

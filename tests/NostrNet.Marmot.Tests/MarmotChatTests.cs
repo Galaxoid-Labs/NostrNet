@@ -13,7 +13,8 @@ public class MarmotChatTests
 {
     // A minimal in-memory IMarmotMlsProvider stand-in so the
     // NostrNet.Marmot test project can exercise MarmotChat without
-    // pulling NostrNet.Marmot.Mls.Reference into its dependency graph.
+    // pulling NostrNet.Marmot.Mls.Native (and its Rust toolchain
+    // dependency) into its dependency graph.
     // It tracks the symmetric "exporter secret" both sides need to
     // match for kind-445 to round-trip, plus a per-leaf generation
     // counter so we still demonstrate forward-direction tracking.
