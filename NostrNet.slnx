@@ -6,11 +6,13 @@
     <Project Path="src/NostrNet.Client/NostrNet.Client.csproj" />
     <Project Path="src/NostrNet.Core/NostrNet.Core.csproj" />
     <Project Path="src/NostrNet.Crypto/NostrNet.Crypto.csproj" />
+    <Project Path="src/NostrNet.Marmot/NostrNet.Marmot.csproj" />
     <Project Path="src/NostrNet.Relay/NostrNet.Relay.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/NostrNet.Core.Tests/NostrNet.Core.Tests.csproj" />
     <Project Path="tests/NostrNet.Crypto.Tests/NostrNet.Crypto.Tests.csproj" />
+    <Project Path="tests/NostrNet.Marmot.Tests/NostrNet.Marmot.Tests.csproj" />
     <Project Path="tests/NostrNet.Relay.Tests/NostrNet.Relay.Tests.csproj" />
   </Folder>
 </Solution>

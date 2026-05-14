@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NostrNet.Marmot</RootNamespace>
+    <AssemblyName>NostrNet.Marmot</AssemblyName>
+    <Description>Marmot protocol (MLS-over-Nostr) wire envelope. Provides the Nostr-layer event kinds, TLS codec, and Marmot Group Data extension. MLS itself is pluggable via IMarmotMlsProvider.</Description>
+    <PackageTags>nostr;marmot;mls;e2ee;groups;mip-00;mip-01;mip-02;mip-03</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NostrNet.Core\NostrNet.Core.csproj" />
+    <ProjectReference Include="..\NostrNet.Crypto\NostrNet.Crypto.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NostrNet.Marmot.Tests" />
+  </ItemGroup>
+
+</Project>
