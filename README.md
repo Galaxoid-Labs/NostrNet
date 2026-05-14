@@ -22,8 +22,11 @@ await client.PostNoteAsync("Hello, Nostr!");
 | NIP | Feature |
 |----|---------|
 | [01](https://github.com/nostr-protocol/nips/blob/master/01.md) | Core protocol — events, BIP-340 Schnorr signing, relay messaging (`EVENT`, `REQ`, `EOSE`, `OK`, `NOTICE`, `CLOSED`) |
+| [02](https://github.com/nostr-protocol/nips/blob/master/02.md) | Contact / follow list (kind 3) |
 | [04](https://github.com/nostr-protocol/nips/blob/master/04.md) | Legacy DM decoding (encryption marked `[Obsolete]` — prefer NIP-17) |
 | [05](https://github.com/nostr-protocol/nips/blob/master/05.md) | DNS-based identifier verification |
+| [09](https://github.com/nostr-protocol/nips/blob/master/09.md) | Event deletion requests (kind 5) with `e`/`a`/`k` tags and `Targets()` rule |
+| [10](https://github.com/nostr-protocol/nips/blob/master/10.md) | Thread / reply tagging (marker form + legacy positional fallback) |
 | [11](https://github.com/nostr-protocol/nips/blob/master/11.md) | Relay information document |
 | [13](https://github.com/nostr-protocol/nips/blob/master/13.md) | Proof of work (mining + validation) |
 | [17](https://github.com/nostr-protocol/nips/blob/master/17.md) | Private direct messages |
@@ -31,6 +34,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [21](https://github.com/nostr-protocol/nips/blob/master/21.md) | `nostr:` URI scheme |
 | [22](https://github.com/nostr-protocol/nips/blob/master/22.md) | Comments (kind 1111) — threaded uppercase/lowercase root + parent tags |
 | [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form markdown articles & drafts (kinds 30023 / 30024) |
+| [25](https://github.com/nostr-protocol/nips/blob/master/25.md) | Reactions (kind 7) — likes / dislikes / Unicode emoji / custom shortcode emoji |
 | [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | Client-relay AUTH — auto-auth + auto-retry on `auth-required` by default |
 | [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | v2 encrypted payloads (ChaCha20 + HMAC-SHA256 + HKDF) |
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets — public + NIP-44 self-encrypted private items |
@@ -53,7 +57,7 @@ full design.
 | 03 | Group event content encryption (kind 445, keyed off MLS exporter) |
 
 Tested against the official BIP-340, BIP-173, RFC 8439, NIP-44, and Galaxoid
-Labs Swift Nostr interop vectors — **490+ tests, zero warnings.**
+Labs Swift Nostr interop vectors — **520+ tests, zero warnings.**
 
 ## Install
 
