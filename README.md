@@ -45,9 +45,9 @@ await client.PostNoteAsync("Hello, Nostr!");
 ### Marmot (MLS over Nostr)
 
 [Marmot](https://github.com/marmot-protocol/marmot) support is split into
-an envelope-only package and a pluggable MLS provider. See
+an envelope-only package and an OpenMLS-backed MLS provider. See
 [`src/NostrNet.Marmot/README.md`](src/NostrNet.Marmot/README.md) for the
-full design.
+full design and a complete walkthrough of 1:1 and group flows.
 
 | MIP | Feature |
 |----|---------|
@@ -56,8 +56,12 @@ full design.
 | 02 | Welcome event (kind 444 wrapped in NIP-59 gift wrap) |
 | 03 | Group event content encryption (kind 445, keyed off MLS exporter) |
 
+Group ops supported end-to-end through `NostrNet.Marmot.Mls.Native` (OpenMLS via FFI):
+1:1 + N-party conversations, add peer, remove peer, key rotation
+(MLS self-update), application messages, persistent state (SQLite).
+
 Tested against the official BIP-340, BIP-173, RFC 8439, NIP-44, and Galaxoid
-Labs Swift Nostr interop vectors — **520+ tests, zero warnings.**
+Labs Swift Nostr interop vectors — **525+ tests, zero warnings.**
 
 ## Install
 

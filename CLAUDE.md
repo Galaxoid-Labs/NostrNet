@@ -7,21 +7,35 @@ maintainers; user-facing docs live in `README.md`.
 
 ```
 src/
-  NostrNet.Core/      Keys, events, NIP-01 canonical id, NIP-19 bech32,
-                      Profile (kind 0), Articles (NIP-23), internal Secp256k1
-                      wrapper. No I/O.
-  NostrNet.Crypto/    ChaCha20 (RFC 8439), NIP-44 v2, NIP-17/59 gift wrap,
-                      NIP-51 lists. Uses Core's internal Secp256k1.
-  NostrNet.Relay/     ClientWebSocket-based RelayClient, RelayPool, Filter,
-                      RelayInformation (NIP-11), Nip05.
-  NostrNet.Client/    NostrClient façade — RelayPool + optional key + helpers.
-tests/                xUnit; vectors as embedded resources where applicable.
-samples/              CLI: gen post dm feed mine info verify.
+  NostrNet.Core/                Keys, events, NIP-01 canonical id, NIP-19 bech32,
+                                Profile (kind 0), Articles (NIP-23), Contacts,
+                                Deletions, Reactions, Threading, internal Secp256k1
+                                wrapper. No I/O.
+  NostrNet.Crypto/              ChaCha20 (RFC 8439), NIP-44 v2, NIP-17 DMs,
+                                NIP-59 gift wrap, NIP-51 lists. Uses Core's
+                                internal Secp256k1.
+  NostrNet.Relay/               ClientWebSocket-based RelayClient, RelayPool,
+                                Filter, RelayInformation (NIP-11), Nip05.
+  NostrNet.Client/              NostrClient façade — RelayPool + optional key + helpers.
+  NostrNet.Marmot/              Marmot wire envelopes (kinds 30443/444/445),
+                                IMarmotMlsProvider interface, MarmotChat 1:1 + group
+                                helpers, NIP-59 wrap/unwrap of Welcomes. No MLS engine.
+  NostrNet.Marmot.Mls.Native/   IMarmotMlsProvider implementation backed by OpenMLS
+                                via the in-tree Rust FFI bridge. Sole MLS provider.
+nostrnet-marmot-native/         Rust crate (cdylib + rlib). Wraps openmls 0.8 with
+                                a C ABI consumed by NostrNet.Marmot.Mls.Native via
+                                LibraryImport. SQLite-backed persistence.
+tests/                          xUnit; vectors as embedded resources where applicable.
+samples/                        CLI: gen post dm feed mine info verify vanity-* marmot-mls-smoke.
 ```
 
 Single TFM `net10.0`. Central Package Management.
 `<IsAotCompatible>true</IsAotCompatible>` on every shippable lib; AOT/trim
 warnings fail the build. MIT license, Galaxoid Labs.
+
+The Rust crate is required to build `NostrNet.Marmot.Mls.Native` from
+source: `cargo` must be on PATH. CI installs the toolchain via
+`dtolnay/rust-toolchain@stable`. Other projects build without it.
 
 ## Locked-in decisions
 
@@ -41,14 +55,21 @@ warnings fail the build. MIT license, Galaxoid Labs.
 6. **Exceptions, not `Result<T,E>`.** `Try*` variants for parsing untrusted
    input; bool/nullable for normal protocol outcomes (relay rejection,
    sig-verify result).
+7. **OpenMLS is the only MLS engine.** The earlier in-tree reference
+   provider (`NostrNet.Marmot.Mls.Reference`) was a stepping stone and is
+   gone. Don't reintroduce a pure-managed MLS — channel proposals through
+   `IMarmotMlsProvider` so OpenMLS does the work.
 
 ## NIPs implemented
 
 | NIP | What | Where |
 |----|------|-------|
 | 01 | events, canonical id, BIP-340, relay protocol | Core + Relay |
+| 02 | contact / follow list (kind 3) | Core/Contacts/ |
 | 04 | legacy DM **decode only** (encrypt obsoleted) | (placeholder) |
 | 05 | DNS-based identifier verification | Relay |
+| 09 | event deletion requests (kind 5) with Targets() rule | Core/Deletions/ |
+| 10 | thread/reply tagging (marker + legacy positional) | Core/Threading/ |
 | 11 | relay info document | Relay |
 | 13 | proof of work | Core/Events/ProofOfWork.cs |
 | 17 | private DMs (over NIP-59) | Crypto/Nip17.cs |
@@ -56,15 +77,70 @@ warnings fail the build. MIT license, Galaxoid Labs.
 | 21 | `nostr:` URI scheme | Core/Nip19/Nip21.cs |
 | 22 | threaded comments (kind 1111; E/A/I + e/a/i tag pairs) | Core/Comments/ |
 | 23 | long-form articles & drafts (30023/30024) | Core/Articles/ |
+| 25 | reactions (kind 7) with custom-emoji support | Core/Reactions/ |
 | 42 | client-relay AUTH (challenge capture + auth event + send) | Core/Auth/ + Relay |
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
 | 51 | lists & sets (public + NIP-44 self-encrypted private items) | Crypto/Lists/ |
-| 59 | gift wrap (used by NIP-17) | Crypto/Nip17.cs |
+| 59 | gift wrap (used by NIP-17 and Marmot Welcomes) | Crypto/Nip59.cs |
 | 65 | relay list metadata (kind 10002) | Core/RelayList/ |
 | B0 | web bookmarks (kind 39701, parameterized replaceable by URL) | Core/Bookmarks/ |
 
-**Deferred:** NIP-02 contacts, NIP-07/46, NIP-57 zaps, NIP-09/25/10.
-Mechanical once needed.
+**Deferred:** NIP-07/46 (signers), NIP-57 zaps. Mechanical once needed.
+
+## Marmot MIPs (MLS over Nostr)
+
+| MIP | What | Where |
+|----|------|-------|
+| 00 | KeyPackage publication (kind 30443) | Marmot/Events/KeyPackageEvent.cs |
+| 01 | Marmot Group Data extension (0xF2EE) | Marmot/GroupData/MarmotGroupDataExtension.cs |
+| 02 | Welcome events (kind 444 in NIP-59 gift wrap) | Marmot/Events/WelcomeEvent.cs |
+| 03 | Group event content encryption (kind 445, exporter-keyed) | Marmot/Events/GroupEvent.cs |
+
+`IMarmotMlsProvider` (in `NostrNet.Marmot`) is the boundary between
+envelope and MLS engine. The one provided implementation is
+`NostrNet.Marmot.Mls.Native.OpenMlsProvider`, which wraps OpenMLS
+through the Rust FFI in `nostrnet-marmot-native/`.
+
+Group ops the provider implements (all RFC-9420 wire-compliant):
+
+| Op | IMarmotMlsProvider method | MarmotChat helper |
+|----|---------------------------|--------------------|
+| publish KeyPackage | `BuildKeyPackageAsync` | `BuildKeyPackageEventAsync` |
+| parse received KeyPackage | `ParseKeyPackageAsync` | (used by `StartConversationAsync` / `StartGroupAsync`) |
+| create + start 1:1 | `CreateGroupAsync` + `AddMembersAsync` | `StartConversationAsync` |
+| create + start N-party | `CreateGroupAsync` + `AddMembersAsync` (N kp) | `StartGroupAsync` |
+| add peer to existing group | `AddMembersAsync` | `AddPeerAsync` |
+| accept invite | `JoinGroupFromWelcomeAsync` | `TryAcceptInviteAsync` |
+| send | `EncryptApplicationMessageAsync` | `EncryptMessageAsync` |
+| receive (richer) | `ProcessIncomingMlsMessageAsync` | `TryProcessMessageAsync` |
+| receive (plaintext-only) | (combines above) | `TryDecryptMessageAsync` |
+| remove peer | `RemoveMembersAsync` | `RemovePeerAsync` |
+| rotate own keys | `SelfUpdateAsync` | `RotateKeysAsync` |
+| current exporter (kind-445 key) | `CurrentExporterSecretAsync` | (implicit via send/receive) |
+
+State persistence:
+- `new OpenMlsProvider()` — in-memory SQLite (lost on dispose).
+- `OpenMlsProvider.OpenAtPath(path)` — file-backed SQLite. State survives restart.
+
+## FFI conventions (nostrnet-marmot-native ↔ NostrNet.Marmot.Mls.Native)
+
+- All entry points return `i32`. `0` = success, negative = error.
+  Last error message stored thread-local; surface via
+  `marmot_last_error_message()` → `*const c_char`.
+- Output buffers are Rust-allocated as `Box<[u8]>` then transferred to
+  managed via `(out *mut u8, out usize)`. Managed copies + calls
+  `marmot_buffer_free(ptr, len)`.
+- Inputs are read-only `(*const u8, usize)`; no ownership transfer.
+- Multi-element inputs (e.g. multiple KeyPackages for `add_members`,
+  multiple pubkeys for `remove_members`) use length-prefixed blobs:
+  `[u32 BE count] [u32 BE len_i] [bytes_i] ...` or
+  `[u32 BE count] [32 bytes id_i] ...`.
+- Provider handle is opaque `*mut Provider`. `marmot_provider_new` for
+  in-memory; `marmot_provider_open_at_path(c_char*)` for SQLite-backed.
+- Storage is OpenMLS's storage trait, backed by SqliteStorageProvider
+  with a JSON codec. **Single source of truth** — there is no
+  in-memory state to "rehydrate." Signature keys for any group are
+  looked up by `SignatureKeyPair::read(storage, own_leaf_pubkey, scheme)`.
 
 ## Test vectors
 
@@ -75,6 +151,7 @@ Mechanical once needed.
 | RFC 8439 ChaCha20 | RFC | inline in `ChaCha20Tests.cs` |
 | NIP-44 official | paulmillr/nip44 | embedded resource in Crypto.Tests |
 | NIP-19 / event id interop | Galaxoid Labs Swift Nostr | inline |
+| MLS interop | _(deferred — no cross-impl vectors yet)_ | n/a |
 
 **Rule:** find an interop vector before writing impl. Tests must pass
 against external implementations.
@@ -93,6 +170,12 @@ against external implementations.
   of every event as a separate `SubscriptionEventReceived(Event, Relay)`.
   Consumers dedup if they want; `NostrClient.SubscribeAsync` exposes the
   relay info via `ReceivedEvent(Event, Relay)`.
+- **Marmot MLS forward secrecy** is what OpenMLS gives us. Removed members
+  lose access automatically (proven by `RemovePeer_RemovedMemberLosesAccess`).
+  Key rotation is `MarmotChat.RotateKeysAsync` (MLS self-update). Commits
+  must be processed BEFORE application messages from the new epoch — if
+  relays deliver out of order, `TryDecryptMessage` returns null and the
+  caller should park-and-retry.
 
 ## Vanity key generation
 
@@ -139,9 +222,12 @@ they're load-bearing for every NIP that builds or parses events.
 
 ## Gotchas / footguns
 
-- **`Encoding` namespace clash.** `NostrNet.Encoding` (bech32, TLV) shadows
-  `System.Text.Encoding`. Files needing `Encoding.UTF8` must add
+- **`Encoding` namespace clash.** `NostrNet.Encoding` and
+  `NostrNet.Marmot.Encoding` (bech32, TLV) shadow `System.Text.Encoding`.
+  Files needing `Encoding.UTF8` must add
   `using SysEncoding = System.Text.Encoding;` and use `SysEncoding.UTF8`.
+  In test files near the Marmot namespace this also bites
+  `Encoding.ASCII` etc. Same fix.
 - **xUnit `Assert.Throws<T>(() => F())` and value-returning lambdas.** The
   compiler may bind to the obsolete `Func<Task>` overload. Wrap in a
   statement block: `Assert.Throws<T>(() => { F(); });`.
@@ -163,6 +249,16 @@ they're load-bearing for every NIP that builds or parses events.
 - **Internal `Secp256k1` access.** Consumers outside `NostrNet.Core` add
   themselves to `Core.csproj`'s `<InternalsVisibleTo>` (already done for
   Crypto, Relay, both test projects). **Never make it public.**
+- **MLS Commit ordering.** If a Commit (epoch-advance) and an
+  application message from the new epoch are delivered out of order,
+  `TryDecryptMessage` on the app message returns null because the
+  receiver doesn't have the new exporter yet. App code should park-and-retry
+  on null; the next Commit fires the exporter rotation.
+- **Cargo build is required** to compile NostrNet.Marmot.Mls.Native from
+  source. The csproj's `CargoBuild` MSBuild target shells out to
+  `cargo build`. If Rust isn't on PATH, the project fails fast at build
+  time. Other projects (Core, Crypto, Relay, Client, Marmot) build
+  without it.
 
 ## Documentation, file layout, build
 
@@ -172,7 +268,12 @@ they're load-bearing for every NIP that builds or parses events.
   Code comments are for *why*, never *what*.
 - One public type per file. Folder = sub-namespace.
   `tests/Foo/FooTests.cs` mirrors `src/.../Foo.cs`.
-- `dotnet build && dotnet test` from repo root. CLI sample:
-  `dotnet run --project samples/NostrNet.Sample.Console -- <cmd>`.
-- CI: `.github/workflows/ci.yml` (matrix + AOT smoke) and
-  `release.yml` (v* tags → `.nupkg` files attached to GitHub release).
+- `dotnet build` and `dotnet test` from repo root. CLI sample:
+  `dotnet run --project samples/NostrNet.Sample.Console -- <cmd>`. Test
+  discovery via `NostrNet.slnx` (slnx is the new XML solution format).
+- CI: `.github/workflows/ci.yml` (matrix on ubuntu/windows/macos +
+  AOT smoke). Each runner installs Rust via `dtolnay/rust-toolchain@stable`
+  and caches cargo registry + target dir.
+- Release: `release.yml` (v* tags → `.nupkg` files attached to GitHub
+  release). NuGet multi-RID packaging for the Native package is **not
+  yet implemented** — that's the next planned milestone.

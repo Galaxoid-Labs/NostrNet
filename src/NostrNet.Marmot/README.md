@@ -11,8 +11,9 @@ To actually run Marmot, pair this package with an MLS provider:
 
 - **`NostrNet.Marmot.Mls.Native`** — OpenMLS-backed provider via an
   in-tree Rust FFI bridge (`nostrnet-marmot-native/`). RFC-9420
-  compliant wire bytes, supports 1:1 conversations end-to-end.
-  Building from source requires the Rust toolchain on PATH.
+  compliant wire bytes. Supports 1:1 and N-party groups, adds, removes,
+  key rotation, and persistent (SQLite-backed) state. Building from
+  source requires the Rust toolchain on PATH.
 
 ## MIPs implemented
 
@@ -37,7 +38,10 @@ using NostrNet.Marmot;
 using NostrNet.Marmot.Mls.Native;     // OpenMLS-backed provider
 using NostrNet.Keys;
 
+// In-memory provider (state evaporates on dispose):
 using IMarmotMlsProvider provider = new OpenMlsProvider();
+// — or — persistent across restarts:
+//   using var provider = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite");
 
 using var myKey = PrivateKey.Generate();
 var myRelays = new[] { "wss://relay.example" };
@@ -110,6 +114,46 @@ messages from the new epoch, because the new app messages are keyed to
 the new exporter. If a relay delivers events out of order, your receive
 loop will see decrypt failures on app messages until the Commit arrives
 — park-and-retry is the standard fix.
+
+### Removing members + rotating keys
+
+Both operations advance the epoch and produce a kind-445 Commit
+GroupEvent for existing members to process:
+
+```csharp
+// Admin removes a peer (or peers). The removed peer loses access:
+// future kind-445 events fail to decrypt on their side.
+var removed = await MarmotChat.RemovePeerAsync(
+    provider, convo, new[] { eveKey.PublicKey });
+// publish removed.CommitGroupEvent to the group's relays.
+
+// A member rotates their own leaf keys (MLS self-update). Existing
+// members process the Commit and advance to the new epoch.
+var rotated = await MarmotChat.RotateKeysAsync(provider, convo);
+// publish rotated.CommitGroupEvent.
+```
+
+Forward secrecy works the way MLS promises: removed members can no
+longer derive the new epoch's exporter, so they can't decrypt any
+post-removal traffic.
+
+### Persistence
+
+`new OpenMlsProvider()` keeps state in an in-memory SQLite database —
+fine for tests, lost when the provider is disposed.
+
+For production, open the provider at a filesystem path. State (groups,
+signature keypairs, HPKE init keys) is persisted across process
+restarts:
+
+```csharp
+using var provider = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite");
+// ... use provider as normal ...
+// dispose. Next time the process starts:
+using var provider2 = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite");
+// All previously-built KeyPackages, joined groups, and current
+// exporter secrets are immediately available.
+```
 
 ## Low-level flow
 
