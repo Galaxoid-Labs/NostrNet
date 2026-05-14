@@ -20,6 +20,9 @@
 //   mine <nsec> <text> <difficulty>      — mine a NIP-13 kind-1 note and publish
 //   info <relay-uri>                     — fetch the relay's NIP-11 document
 //   verify <npub> <identifier>           — NIP-05 verify a pubkey ↔ identifier mapping
+//   vanity-pow <bits>                    — generate a key with N leading-zero pubkey bits
+//   vanity-npub <pattern> [--suffix]     — generate a key whose npub matches a bech32 pattern
+//   vanity-hex  <pattern> [--suffix]     — generate a key whose pubkey hex matches a pattern
 
 using NostrNet.Client;
 using NostrNet.Events;
@@ -50,6 +53,9 @@ try
         "mine" => await MineAsync(args),
         "info" => await InfoAsync(args),
         "verify" => await VerifyNip05Async(args),
+        "vanity-pow" => await VanityPowAsync(args),
+        "vanity-npub" => await VanityAsync(args, npub: true),
+        "vanity-hex" => await VanityAsync(args, npub: false),
         _ => UnknownCommand(args[0]),
     };
 }
@@ -268,6 +274,75 @@ async Task<int> VerifyNip05Async(string[] argv)
     return 2;
 }
 
+async Task<int> VanityPowAsync(string[] argv)
+{
+    if (argv.Length < 2 || !int.TryParse(argv[1], out int bits))
+    {
+        Console.Error.WriteLine("usage: vanity-pow <bits>");
+        return 64;
+    }
+
+    Console.WriteLine($"mining a key with {bits} leading-zero bits (Ctrl-C to stop)...");
+    var (cts, progress) = SetupVanitySearch();
+
+    try
+    {
+        using var key = await VanityKeyGenerator.MinePowAsync(bits, progress: progress, cancellationToken: cts.Token);
+        Console.WriteLine();
+        Console.WriteLine($"  nsec: {key.ToNsec()}");
+        Console.WriteLine($"  npub: {key.PublicKey.ToNpub()}");
+        Console.WriteLine($"  hex:  {key.PublicKey.ToHex()}");
+        return 0;
+    }
+    catch (OperationCanceledException) { Console.WriteLine(); Console.WriteLine("cancelled."); return 130; }
+}
+
+async Task<int> VanityAsync(string[] argv, bool npub)
+{
+    if (argv.Length < 2)
+    {
+        Console.Error.WriteLine($"usage: vanity-{(npub ? "npub" : "hex")} <pattern> [--suffix]");
+        return 64;
+    }
+
+    string pattern = argv[1];
+    bool suffix = argv.Length > 2 && argv[2] == "--suffix";
+
+    Console.WriteLine(
+        $"mining a key whose {(npub ? "npub" : "pubkey hex")} {(suffix ? "ends with" : "starts with")} '{pattern}'...");
+    var (cts, progress) = SetupVanitySearch();
+
+    try
+    {
+        PrivateKey key;
+        if (npub && !suffix)      key = await VanityKeyGenerator.MineNpubPrefixAsync(pattern, progress: progress, cancellationToken: cts.Token);
+        else if (npub)            key = await VanityKeyGenerator.MineNpubSuffixAsync(pattern, progress: progress, cancellationToken: cts.Token);
+        else if (!suffix)         key = await VanityKeyGenerator.MineHexPrefixAsync(pattern, progress: progress, cancellationToken: cts.Token);
+        else                       key = await VanityKeyGenerator.MineHexSuffixAsync(pattern, progress: progress, cancellationToken: cts.Token);
+
+        using (key)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"  nsec: {key.ToNsec()}");
+            Console.WriteLine($"  npub: {key.PublicKey.ToNpub()}");
+            Console.WriteLine($"  hex:  {key.PublicKey.ToHex()}");
+        }
+
+        return 0;
+    }
+    catch (OperationCanceledException) { Console.WriteLine(); Console.WriteLine("cancelled."); return 130; }
+    catch (ArgumentException ex) { Console.Error.WriteLine($"error: {ex.Message}"); return 64; }
+}
+
+(CancellationTokenSource cts, IProgress<VanityMiningProgress> progress) SetupVanitySearch()
+{
+    var cancelSource = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { cancelSource.Cancel(); e.Cancel = true; };
+    var progress = new Progress<VanityMiningProgress>(p =>
+        Console.Write($"\r  attempts: {p.Attempts:N0}  rate: {p.AttemptsPerSecond:N0}/sec  elapsed: {p.Elapsed:mm\\:ss}   "));
+    return (cancelSource, progress);
+}
+
 int UnknownCommand(string cmd)
 {
     Console.Error.WriteLine($"unknown command: {cmd}");
@@ -285,4 +360,7 @@ void PrintUsage()
     Console.Error.WriteLine("  mine  <nsec> <text> <difficulty>     mine a NIP-13 PoW note and publish");
     Console.Error.WriteLine("  info  <relay-uri>                    fetch the relay's NIP-11 document");
     Console.Error.WriteLine("  verify <npub> <identifier>           NIP-05 verify pubkey ↔ identifier");
+    Console.Error.WriteLine("  vanity-pow  <bits>                   mine a key with N leading-zero pubkey bits");
+    Console.Error.WriteLine("  vanity-npub <pattern> [--suffix]     mine a key whose npub matches a bech32 pattern");
+    Console.Error.WriteLine("  vanity-hex  <pattern> [--suffix]     mine a key whose pubkey hex matches a pattern");
 }

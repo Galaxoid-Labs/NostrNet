@@ -94,6 +94,26 @@ against external implementations.
   Consumers dedup if they want; `NostrClient.SubscribeAsync` exposes the
   relay info via `ReceivedEvent(Event, Relay)`.
 
+## Vanity key generation
+
+`Core/Keys/VanityKeyGenerator.cs` brute-forces a private key whose pubkey
+matches a pattern: PoW leading-zero bits, npub bech32 prefix/suffix, or
+hex prefix/suffix.
+
+- Multi-threaded — one worker per logical core by default. Workers
+  generate random scalars, derive pubkeys via the internal `Secp256k1`,
+  and check the matcher. First match wins; the linked CTS cancels the rest.
+- Progress is throttled to ~500ms cadence regardless of throughput. Workers
+  only `Interlocked.Add` to a shared counter; a dedicated reporter task
+  fires `IProgress<T>.Report`.
+- Charset validation is **eager** — `MineNpubPrefixAsync("bob")` throws
+  immediately because `b` isn't in the bech32 alphabet. This is the
+  difference between a clear error and the loop running forever.
+- Found `byte[]` private-key copies are zeroed with
+  `CryptographicOperations.ZeroMemory` once they've been wrapped in
+  `PrivateKey`. The losing workers also zero their `byte[]` copy if
+  `TrySetResult` failed.
+
 ## Performance — hot-path notes
 
 The receive→verify→dispatch path is where almost all CPU goes. Key

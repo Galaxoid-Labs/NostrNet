@@ -257,6 +257,102 @@ Helpers that need to sign or decrypt (`PostNoteAsync`,
 `InvalidOperationException` when called on a key-less client — guard with
 `client.HasKey` if you're unsure of state.
 
+### Vanity key generation
+
+Mine a key whose npub or pubkey hex matches a chosen pattern — or whose
+pubkey carries proof-of-work leading-zero bits. Multi-threaded, with
+cancellation and progress reporting designed for UI apps.
+
+```csharp
+using NostrNet.Keys;
+
+// 1. PoW: pubkey with ≥ 20 leading zero bits
+using var pow = await VanityKeyGenerator.MinePowAsync(leadingZeroBits: 20);
+
+// 2. npub prefix (after "npub1")
+using var alice = await VanityKeyGenerator.MineNpubPrefixAsync("alce");
+
+// 3. Hex pubkey suffix
+using var dead = await VanityKeyGenerator.MineHexSuffixAsync("dead");
+
+Console.WriteLine(alice.PublicKey.ToNpub());   // npub1alce...
+Console.WriteLine(dead.PublicKey.ToHex());     // ...dead
+```
+
+All five entry points (`MinePowAsync`, `MineNpubPrefixAsync`,
+`MineNpubSuffixAsync`, `MineHexPrefixAsync`, `MineHexSuffixAsync`) take the
+same optional parameters: `threadCount` (defaults to one per logical core),
+`progress` (an `IProgress<VanityMiningProgress>`), and `cancellationToken`.
+
+**Charset is validated up front.** The bech32 alphabet excludes `b`, `i`,
+`o`, and `1`, so `MineNpubPrefixAsync("bob")` throws `ArgumentException`
+immediately instead of looping forever. Use `MineHexPrefixAsync("bob")` if
+you want those characters in hex.
+
+#### In a UI app
+
+`IProgress<T>` is the standard plumbing for CPU-bound work that reports
+to the UI. Constructing a `Progress<T>` on the UI thread captures its
+`SynchronizationContext` — every `.Report(...)` call resumes there so you
+can touch UI directly:
+
+```csharp
+private async void MineButton_Click(object sender, RoutedEventArgs e)
+{
+    _cts = new CancellationTokenSource();
+
+    var progress = new Progress<VanityMiningProgress>(p =>
+    {
+        // Runs on the UI thread — safe to update widgets directly.
+        statusLabel.Text = $"{p.Attempts:N0} attempts · {p.AttemptsPerSecond:N0}/sec";
+        progressLabel.Text = p.Elapsed.ToString(@"mm\:ss");
+    });
+
+    try
+    {
+        using var key = await VanityKeyGenerator.MineNpubPrefixAsync(
+            prefix: prefixInput.Text,
+            progress: progress,
+            cancellationToken: _cts.Token);
+
+        npubLabel.Text = key.PublicKey.ToNpub();
+        nsecLabel.Text = key.ToNsec();
+    }
+    catch (OperationCanceledException)
+    {
+        statusLabel.Text = "Cancelled.";
+    }
+}
+
+private void CancelButton_Click(object sender, RoutedEventArgs e) => _cts?.Cancel();
+```
+
+The library throttles internal progress to ~one update per 500ms regardless
+of throughput, so the UI thread never gets flooded with marshaled callbacks.
+
+#### Rough performance expectations
+
+Approximate, on a modern multi-core laptop:
+
+| Pattern length | Probability | Expected time |
+|----|----|----|
+| 1 char | 1 in 32 | < 1 second |
+| 3 chars | 1 in 32,768 | seconds |
+| 4 chars | 1 in ~1M | seconds–minute |
+| 5 chars | 1 in ~33M | ~1–2 min |
+| 6 chars | 1 in ~1B | ~30 min |
+| 7 chars | 1 in ~33B | hours |
+| PoW 16 bits | 1 in 65,536 | < 1 second |
+| PoW 24 bits | 1 in ~16M | seconds–minute |
+| PoW 32 bits | 1 in ~4B | hours |
+
+Throughput scales near-linearly with core count. The dominant cost per
+attempt is the secp256k1 pubkey derivation — currently via the managed
+`NBitcoin.Secp256k1` backend, which is portable but slower than native
+libsecp256k1. If you need 10× speed for very long patterns, a native
+backend (P/Invoke `libsecp256k1`) is a future option that would slot in
+behind the internal `Secp256k1` wrapper without changing this API.
+
 ### Generate or load a key
 
 ```csharp
@@ -989,6 +1085,15 @@ dotnet run --project samples/NostrNet.Sample.Console -- info wss://relay.damus.i
 
 # Verify a NIP-05 identifier
 dotnet run --project samples/NostrNet.Sample.Console -- verify npub1... bob@example.com
+
+# Vanity: 20-bit pubkey PoW
+dotnet run --project samples/NostrNet.Sample.Console -- vanity-pow 20
+
+# Vanity: npub starting with "alce" (bech32 chars only)
+dotnet run --project samples/NostrNet.Sample.Console -- vanity-npub alce
+
+# Vanity: pubkey hex ending with "dead"
+dotnet run --project samples/NostrNet.Sample.Console -- vanity-hex dead --suffix
 ```
 
 ---
