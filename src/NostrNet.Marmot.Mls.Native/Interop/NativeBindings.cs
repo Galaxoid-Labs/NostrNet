@@ -62,4 +62,39 @@ internal static partial class NativeBindings
         IntPtr* outIdentityPtr, nuint* outIdentityLen,
         IntPtr* outKpRefPtr, nuint* outKpRefLen,
         ushort* outCiphersuite);
+
+    // ────────────────────────────────────────────────────────────
+    // Group lifecycle.
+    // ────────────────────────────────────────────────────────────
+
+    [LibraryImport(Library, EntryPoint = "marmot_create_group")]
+    public static unsafe partial int CreateGroup(
+        IntPtr provider,
+        byte* creatorIdentityPtr, nuint creatorIdentityLen,
+        byte* nostrGroupIdPtr,
+        ushort ciphersuite,
+        IntPtr* outExporterPtr, nuint* outExporterLen);
+
+    [LibraryImport(Library, EntryPoint = "marmot_add_member")]
+    public static unsafe partial int AddMember(
+        IntPtr provider,
+        byte* nostrGroupIdPtr,
+        byte* keypackageBundlePtr, nuint keypackageBundleLen,
+        IntPtr* outCommitPtr, nuint* outCommitLen,
+        IntPtr* outWelcomePtr, nuint* outWelcomeLen,
+        IntPtr* outRecipientPtr, nuint* outRecipientLen,
+        IntPtr* outExporterPtr, nuint* outExporterLen);
+
+    [LibraryImport(Library, EntryPoint = "marmot_join_from_welcome")]
+    public static unsafe partial int JoinFromWelcome(
+        IntPtr provider,
+        byte* welcomeBytesPtr, nuint welcomeBytesLen,
+        IntPtr* outGroupIdPtr, nuint* outGroupIdLen,
+        IntPtr* outExporterPtr, nuint* outExporterLen);
+
+    [LibraryImport(Library, EntryPoint = "marmot_current_exporter")]
+    public static unsafe partial int CurrentExporter(
+        IntPtr provider,
+        byte* nostrGroupIdPtr,
+        IntPtr* outExporterPtr, nuint* outExporterLen);
 }

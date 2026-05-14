@@ -135,25 +135,154 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
     }
 
     /// <inheritdoc/>
-    public Task<CreateGroupResult> CreateGroupAsync(
+    public unsafe Task<CreateGroupResult> CreateGroupAsync(
         PublicKey creatorPubkey,
         MarmotGroupDataExtension groupData,
         ushort ciphersuite,
         CancellationToken ct = default)
-        => throw new NotImplementedException("CreateGroupAsync lands in the next FFI iteration.");
+    {
+        ArgumentNullException.ThrowIfNull(creatorPubkey);
+        ArgumentNullException.ThrowIfNull(groupData);
+        if (groupData.NostrGroupId.Length != 32)
+        {
+            throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(groupData));
+        }
+
+        Span<byte> identity = stackalloc byte[32];
+        creatorPubkey.CopyTo(identity);
+
+        IntPtr exporterPtr = IntPtr.Zero;
+        nuint exporterLen = 0;
+        int rc;
+        fixed (byte* identityPin = identity)
+        fixed (byte* gidPin = groupData.NostrGroupId)
+        {
+            rc = NativeBindings.CreateGroup(
+                _handle.DangerousPointer,
+                identityPin, (nuint)identity.Length,
+                gidPin,
+                ciphersuite,
+                &exporterPtr, &exporterLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(CreateGroupAsync));
+        }
+
+        byte[] exporter = FfiBuffer.CopyAndFree(exporterPtr, exporterLen);
+        return Task.FromResult(new CreateGroupResult(
+            NostrGroupId: (byte[])groupData.NostrGroupId.Clone(),
+            InitialExporterSecret: exporter));
+    }
 
     /// <inheritdoc/>
-    public Task<AddMembersResult> AddMembersAsync(
+    public unsafe Task<AddMembersResult> AddMembersAsync(
         ReadOnlyMemory<byte> nostrGroupId,
         IReadOnlyList<ReadOnlyMemory<byte>> keyPackageBundles,
         CancellationToken ct = default)
-        => throw new NotImplementedException("AddMembersAsync lands in the next FFI iteration.");
+    {
+        if (nostrGroupId.Length != 32)
+        {
+            throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(nostrGroupId));
+        }
+
+        if (keyPackageBundles.Count != 1)
+        {
+            throw new NotSupportedException(
+                $"Phase 1 supports adding exactly one member; got {keyPackageBundles.Count}.");
+        }
+
+        var kp = keyPackageBundles[0].Span;
+
+        IntPtr commitPtr = IntPtr.Zero; nuint commitLen = 0;
+        IntPtr welcomePtr = IntPtr.Zero; nuint welcomeLen = 0;
+        IntPtr recipientPtr = IntPtr.Zero; nuint recipientLen = 0;
+        IntPtr exporterPtr = IntPtr.Zero; nuint exporterLen = 0;
+
+        int rc;
+        fixed (byte* gidPin = nostrGroupId.Span)
+        fixed (byte* kpPin = kp)
+        {
+            rc = NativeBindings.AddMember(
+                _handle.DangerousPointer,
+                gidPin,
+                kpPin, (nuint)kp.Length,
+                &commitPtr, &commitLen,
+                &welcomePtr, &welcomeLen,
+                &recipientPtr, &recipientLen,
+                &exporterPtr, &exporterLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(AddMembersAsync));
+        }
+
+        byte[] commit = FfiBuffer.CopyAndFree(commitPtr, commitLen);
+        byte[] welcome = FfiBuffer.CopyAndFree(welcomePtr, welcomeLen);
+        byte[] recipient = FfiBuffer.CopyAndFree(recipientPtr, recipientLen);
+        byte[] exporter = FfiBuffer.CopyAndFree(exporterPtr, exporterLen);
+
+        if (recipient.Length != 32)
+        {
+            throw new InvalidDataException(
+                $"recipient identity must be 32 bytes; got {recipient.Length}.");
+        }
+
+        return Task.FromResult(new AddMembersResult(
+            CommitMlsMessageBytes: commit,
+            Welcomes: new[]
+            {
+                new WelcomeToSend(
+                    RecipientPubkey: new PublicKey(recipient),
+                    WelcomeMlsMessageBytes: welcome),
+            },
+            NewExporterSecret: exporter));
+    }
 
     /// <inheritdoc/>
-    public Task<JoinedGroupResult> JoinGroupFromWelcomeAsync(
+    public unsafe Task<JoinedGroupResult> JoinGroupFromWelcomeAsync(
         ReadOnlyMemory<byte> mlsWelcomeBytes,
         CancellationToken ct = default)
-        => throw new NotImplementedException("JoinGroupFromWelcomeAsync lands in the next FFI iteration.");
+    {
+        var span = mlsWelcomeBytes.Span;
+        IntPtr gidPtr = IntPtr.Zero; nuint gidLen = 0;
+        IntPtr exporterPtr = IntPtr.Zero; nuint exporterLen = 0;
+
+        int rc;
+        fixed (byte* pin = span)
+        {
+            rc = NativeBindings.JoinFromWelcome(
+                _handle.DangerousPointer,
+                pin, (nuint)span.Length,
+                &gidPtr, &gidLen,
+                &exporterPtr, &exporterLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(JoinGroupFromWelcomeAsync));
+        }
+
+        byte[] gid = FfiBuffer.CopyAndFree(gidPtr, gidLen);
+        byte[] exporter = FfiBuffer.CopyAndFree(exporterPtr, exporterLen);
+
+        // We don't yet propagate the MarmotGroupDataExtension across the
+        // MLS-to-Marmot envelope boundary (Marmot carries it in the
+        // group's kind-445 `h` tag), so synthesize a minimal one here.
+        var groupData = new MarmotGroupDataExtension
+        {
+            NostrGroupId = gid,
+            AdminPubkeys = Array.Empty<PublicKey>(),
+            Relays = Array.Empty<string>(),
+        };
+
+        return Task.FromResult(new JoinedGroupResult(
+            NostrGroupId: gid,
+            GroupData: groupData,
+            CurrentExporterSecret: exporter));
+    }
 
     /// <inheritdoc/>
     public Task<byte[]> BuildSelfRemoveProposalAsync(
@@ -176,10 +305,33 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
         => throw new NotImplementedException("ProcessIncomingMlsMessageAsync lands in the next FFI iteration.");
 
     /// <inheritdoc/>
-    public Task<byte[]> CurrentExporterSecretAsync(
+    public unsafe Task<byte[]> CurrentExporterSecretAsync(
         ReadOnlyMemory<byte> nostrGroupId,
         CancellationToken ct = default)
-        => throw new NotImplementedException("CurrentExporterSecretAsync lands in the next FFI iteration.");
+    {
+        if (nostrGroupId.Length != 32)
+        {
+            throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(nostrGroupId));
+        }
+
+        IntPtr exporterPtr = IntPtr.Zero;
+        nuint exporterLen = 0;
+        int rc;
+        fixed (byte* gidPin = nostrGroupId.Span)
+        {
+            rc = NativeBindings.CurrentExporter(
+                _handle.DangerousPointer,
+                gidPin,
+                &exporterPtr, &exporterLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(CurrentExporterSecretAsync));
+        }
+
+        return Task.FromResult(FfiBuffer.CopyAndFree(exporterPtr, exporterLen));
+    }
 
     /// <inheritdoc/>
     public void Dispose()

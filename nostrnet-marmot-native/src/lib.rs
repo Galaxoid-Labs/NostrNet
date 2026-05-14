@@ -25,6 +25,7 @@
 
 mod buffer;
 mod errors;
+mod group;
 mod keypackage;
 mod provider;
 
@@ -32,6 +33,7 @@ use std::ffi::c_char;
 
 pub use buffer::*;
 pub use errors::*;
+pub use group::*;
 pub use keypackage::*;
 pub use provider::*;
 
@@ -163,6 +165,120 @@ pub unsafe extern "C" fn marmot_parse_keypackage(
             out_kp_ref_ptr,
             out_kp_ref_len,
             out_ciphersuite,
+        )
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Group lifecycle.
+// ──────────────────────────────────────────────────────────────────────
+
+/// # Safety
+/// See `group::create_group`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn marmot_create_group(
+    provider: *mut Provider,
+    creator_identity_ptr: *const u8,
+    creator_identity_len: usize,
+    nostr_group_id_ptr: *const u8,
+    ciphersuite: u16,
+    out_exporter_ptr: *mut *mut u8,
+    out_exporter_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        group::create_group(
+            provider,
+            creator_identity_ptr,
+            creator_identity_len,
+            nostr_group_id_ptr,
+            ciphersuite,
+            out_exporter_ptr,
+            out_exporter_len,
+        )
+    }
+}
+
+/// # Safety
+/// See `group::add_member`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn marmot_add_member(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+    keypackage_bundle_ptr: *const u8,
+    keypackage_bundle_len: usize,
+    out_commit_ptr: *mut *mut u8,
+    out_commit_len: *mut usize,
+    out_welcome_ptr: *mut *mut u8,
+    out_welcome_len: *mut usize,
+    out_recipient_ptr: *mut *mut u8,
+    out_recipient_len: *mut usize,
+    out_exporter_ptr: *mut *mut u8,
+    out_exporter_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        group::add_member(
+            provider,
+            nostr_group_id_ptr,
+            keypackage_bundle_ptr,
+            keypackage_bundle_len,
+            out_commit_ptr,
+            out_commit_len,
+            out_welcome_ptr,
+            out_welcome_len,
+            out_recipient_ptr,
+            out_recipient_len,
+            out_exporter_ptr,
+            out_exporter_len,
+        )
+    }
+}
+
+/// # Safety
+/// See `group::join_from_welcome`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_join_from_welcome(
+    provider: *mut Provider,
+    welcome_bytes_ptr: *const u8,
+    welcome_bytes_len: usize,
+    out_group_id_ptr: *mut *mut u8,
+    out_group_id_len: *mut usize,
+    out_exporter_ptr: *mut *mut u8,
+    out_exporter_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        group::join_from_welcome(
+            provider,
+            welcome_bytes_ptr,
+            welcome_bytes_len,
+            out_group_id_ptr,
+            out_group_id_len,
+            out_exporter_ptr,
+            out_exporter_len,
+        )
+    }
+}
+
+/// # Safety
+/// See `group::current_exporter`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_current_exporter(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+    out_exporter_ptr: *mut *mut u8,
+    out_exporter_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        group::current_exporter(
+            provider,
+            nostr_group_id_ptr,
+            out_exporter_ptr,
+            out_exporter_len,
         )
     }
 }
