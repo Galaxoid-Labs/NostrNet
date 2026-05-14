@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using NostrNet.Crypto;
 using NostrNet.Events;
 using NostrNet.Keys;
+using NostrNet.Pictures;
 using NostrNet.Relay;
 
 namespace NostrNet.Client;
@@ -203,6 +204,45 @@ public sealed class NostrClient : IAsyncDisposable
             Content = content,
         }.Sign(key);
 
+        return await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Signs and publishes a NIP-68 kind-20 picture-first event.
+    /// <paramref name="attachments"/> becomes one <c>imeta</c> tag per
+    /// image and must contain at least one entry. <paramref name="title"/>
+    /// is the required short title; <paramref name="description"/> is the
+    /// free-text caption (event content). Build a richer event — content
+    /// warnings, hashtags, location, language, tagged users — via
+    /// <see cref="PictureEvent.Create"/> and call
+    /// <see cref="PublishAsync"/> directly.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="attachments"/> is empty.</exception>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
+    public async Task<IReadOnlyDictionary<Uri, PublishResult>> PostPictureAsync(
+        string title,
+        string description,
+        IReadOnlyList<PictureMediaAttachment> attachments,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(title);
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentNullException.ThrowIfNull(attachments);
+        if (attachments.Count == 0)
+        {
+            throw new ArgumentException("At least one attachment is required for a NIP-68 picture event.", nameof(attachments));
+        }
+
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(PostPictureAsync));
+
+        var builder = PictureEvent.Create(title).WithDescription(description);
+        foreach (var attachment in attachments)
+        {
+            builder.AddAttachment(attachment);
+        }
+
+        var ev = builder.BuildAndSign(key);
         return await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
     }
 

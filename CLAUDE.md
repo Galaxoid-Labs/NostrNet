@@ -88,6 +88,10 @@ without either.
 | 51 | lists & sets (public + NIP-44 self-encrypted private items) | Crypto/Lists/ |
 | 59 | gift wrap (used by NIP-17 and Marmot Welcomes) | Crypto/Nip59.cs |
 | 65 | relay list metadata (kind 10002) | Core/RelayList/ |
+| 68 | picture-first feeds (kind 20, imeta image attachments) | Core/Pictures/ |
+| 71 | video events (kinds 21 / 22 regular + 34235 / 34236 addressable) | Core/Videos/ |
+| 92 | media attachments via imeta tag (shared parser/builder) | Core/Encoding/Imeta.cs |
+| 94 | file metadata events (kind 1063) | Core/Files/ |
 | B0 | web bookmarks (kind 39701, parameterized replaceable by URL) | Core/Bookmarks/ |
 
 **Deferred:** NIP-07/46 (signers), NIP-57 zaps. Mechanical once needed.

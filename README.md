@@ -40,6 +40,10 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets — public + NIP-44 self-encrypted private items |
 | [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap (used by NIP-17) |
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
+| [68](https://github.com/nostr-protocol/nips/blob/master/68.md) | Picture-first feeds (kind 20, multi-image `imeta` attachments) |
+| [71](https://github.com/nostr-protocol/nips/blob/master/71.md) | Video events (kinds 21/22 regular + 34235/34236 addressable) |
+| [92](https://github.com/nostr-protocol/nips/blob/master/92.md) | Media attachments via `imeta` tag (shared parser/builder) |
+| [94](https://github.com/nostr-protocol/nips/blob/master/94.md) | File metadata events (kind 1063) |
 | [B0](https://github.com/nostr-protocol/nips/blob/master/B0.md) | Web bookmarks (kind 39701; parameterized-replaceable by URL) |
 
 ### Marmot (MLS over Nostr)
