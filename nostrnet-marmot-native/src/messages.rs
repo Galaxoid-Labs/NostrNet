@@ -75,6 +75,15 @@ pub unsafe fn encrypt_application_message(
 
 /// # Safety
 /// Standard FFI safety.
+///
+/// `out_sender_*` receive the 32-byte Nostr pubkey of the message's
+/// sender (looked up via OpenMLS `processed.sender()`'s leaf index
+/// against the group's member list at the time of processing).
+///
+/// For external / new-member messages the sender is null. For Commit
+/// messages the sender is captured BEFORE the commit is applied, so
+/// removals correctly identify "the member who removed the others"
+/// even when the removed leaves include themselves.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn process_incoming_message(
     provider: *mut Provider,
@@ -87,6 +96,8 @@ pub unsafe fn process_incoming_message(
     out_epoch_advanced: *mut u8,
     out_new_exporter_ptr: *mut *mut u8,
     out_new_exporter_len: *mut usize,
+    out_sender_ptr: *mut *mut u8,
+    out_sender_len: *mut usize,
 ) -> i32 {
     if provider.is_null() {
         return fail(ErrorCode::NullArgument, "provider handle is null");
@@ -122,6 +133,20 @@ pub unsafe fn process_incoming_message(
     let processed = match group.process_message(&provider.crypto, protocol_message) {
         Ok(p) => p,
         Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("process_message: {e:?}")),
+    };
+
+    // Capture the sender's identity BEFORE the (potentially-removing)
+    // commit applies. For Member senders we look up their leaf in the
+    // current member list and read the BasicCredential identity bytes.
+    let sender_identity: Option<Vec<u8>> = match processed.sender() {
+        Sender::Member(leaf_index) => group
+            .members()
+            .find(|m| m.index == *leaf_index)
+            .and_then(|m| BasicCredential::try_from(m.credential.clone()).ok())
+            .map(|b| b.identity().to_vec()),
+        // External senders and new-member commits don't have an
+        // in-group identity in our setup.
+        _ => None,
     };
 
     let (kind, payload, advanced) = match processed.into_content() {
@@ -160,6 +185,13 @@ pub unsafe fn process_incoming_message(
             None => {
                 std::ptr::write(out_new_exporter_ptr, std::ptr::null_mut());
                 std::ptr::write(out_new_exporter_len, 0);
+            }
+        }
+        match sender_identity {
+            Some(id) => return_ffi_buffer(id, out_sender_ptr, out_sender_len),
+            None => {
+                std::ptr::write(out_sender_ptr, std::ptr::null_mut());
+                std::ptr::write(out_sender_len, 0);
             }
         }
     }

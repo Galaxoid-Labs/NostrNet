@@ -483,6 +483,8 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
         byte epochAdvanced = 0;
         IntPtr newExpPtr = IntPtr.Zero;
         nuint newExpLen = 0;
+        IntPtr senderPtr = IntPtr.Zero;
+        nuint senderLen = 0;
 
         int rc;
         fixed (byte* gidPin = nostrGroupId.Span)
@@ -495,7 +497,8 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
                 &kind,
                 &payloadPtr, &payloadLen,
                 &epochAdvanced,
-                &newExpPtr, &newExpLen);
+                &newExpPtr, &newExpLen,
+                &senderPtr, &senderLen);
         }
 
         if (rc != 0)
@@ -505,6 +508,8 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
 
         byte[] payload = FfiBuffer.CopyAndFree(payloadPtr, payloadLen);
         byte[]? newExporter = epochAdvanced != 0 ? FfiBuffer.CopyAndFree(newExpPtr, newExpLen) : null;
+        byte[] senderIdentity = FfiBuffer.CopyAndFree(senderPtr, senderLen);
+        PublicKey? sender = senderIdentity.Length == 32 ? new PublicKey(senderIdentity) : null;
 
         var mlsKind = kind switch
         {
@@ -518,7 +523,8 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
             Kind: mlsKind,
             ApplicationPayload: payload,
             EpochAdvanced: epochAdvanced != 0,
-            NewExporterSecret: newExporter));
+            NewExporterSecret: newExporter,
+            Sender: sender));
     }
 
     /// <inheritdoc/>

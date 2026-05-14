@@ -135,5 +135,6 @@ internal static partial class NativeBindings
         int* outKind,
         IntPtr* outPayloadPtr, nuint* outPayloadLen,
         byte* outEpochAdvanced,
-        IntPtr* outNewExporterPtr, nuint* outNewExporterLen);
+        IntPtr* outNewExporterPtr, nuint* outNewExporterLen,
+        IntPtr* outSenderPtr, nuint* outSenderLen);
 }

@@ -420,6 +420,8 @@ pub unsafe extern "C" fn marmot_process_incoming_message(
     out_epoch_advanced: *mut u8,
     out_new_exporter_ptr: *mut *mut u8,
     out_new_exporter_len: *mut usize,
+    out_sender_ptr: *mut *mut u8,
+    out_sender_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
     unsafe {
@@ -434,6 +436,8 @@ pub unsafe extern "C" fn marmot_process_incoming_message(
             out_epoch_advanced,
             out_new_exporter_ptr,
             out_new_exporter_len,
+            out_sender_ptr,
+            out_sender_len,
         )
     }
 }

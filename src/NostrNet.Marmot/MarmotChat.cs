@@ -109,10 +109,17 @@ public enum MarmotMessageKind
 /// stale; <see cref="MarmotChat.EncryptMessageAsync"/> always fetches
 /// the live exporter so existing code keeps working.
 /// </param>
+/// <param name="Sender">
+/// The Nostr pubkey of the member that produced this message, resolved
+/// via the MLS layer (NOT trusting the outer kind-445's signature, which
+/// uses an ephemeral key). <c>null</c> when the provider can't resolve
+/// the sender (e.g. external proposals).
+/// </param>
 public sealed record MarmotInboundMessage(
     MarmotMessageKind Kind,
     string? Plaintext,
-    bool EpochAdvanced);
+    bool EpochAdvanced,
+    PublicKey? Sender = null);
 
 /// <summary>High-level helpers for one-to-one Marmot conversations.</summary>
 public static class MarmotChat
@@ -422,7 +429,7 @@ public static class MarmotChat
             ? SysEncoding.UTF8.GetString(processed.ApplicationPayload)
             : null;
 
-        return new MarmotInboundMessage(kind, plaintext, processed.EpochAdvanced);
+        return new MarmotInboundMessage(kind, plaintext, processed.EpochAdvanced, processed.Sender);
     }
 
     /// <summary>

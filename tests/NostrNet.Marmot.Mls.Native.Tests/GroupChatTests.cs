@@ -150,5 +150,42 @@ public class GroupChatTests
         Assert.Equal(MarmotMessageKind.Application, processed.Kind);
         Assert.Equal("hi", processed.Plaintext);
         Assert.False(processed.EpochAdvanced);
+        // Sender comes from the MLS layer (resolved via OpenMLS's
+        // sender leaf index → BasicCredential identity), not from
+        // the outer ephemeral kind-445 signature.
+        Assert.Equal(alice.Key.PublicKey, processed.Sender);
+    }
+
+    [Fact]
+    public async Task TryProcessMessage_OnCommit_IdentifiesCommitter()
+    {
+        // In a 3-member group, when Alice adds a 4th member, the
+        // resulting Commit GroupEvent's Sender (as seen by Bob) should
+        // be Alice — not the ephemeral kind-445 signer.
+        using var alice = Make();
+        using var bob = Make();
+        using var carol = Make();
+        using var dave = Make();
+        var relays = new[] { "wss://relay.example" };
+
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(bob.Provider, bob.Key, "default", relays);
+        var carolKp = await MarmotChat.BuildKeyPackageEventAsync(carol.Provider, carol.Key, "default", relays);
+        var started = await MarmotChat.StartGroupAsync(
+            alice.Provider, alice.Key, new[] { bobKp, carolKp }, "g", relays);
+        var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob.Provider, bob.Key, started.WelcomeGiftWraps[0]);
+        var carolConvo = await MarmotChat.TryAcceptInviteAsync(carol.Provider, carol.Key, started.WelcomeGiftWraps[1]);
+        Assert.NotNull(bobConvo);
+        Assert.NotNull(carolConvo);
+
+        var daveKp = await MarmotChat.BuildKeyPackageEventAsync(dave.Provider, dave.Key, "default", relays);
+        var add = await MarmotChat.AddPeerAsync(alice.Provider, alice.Key, started.Conversation, daveKp, relays);
+
+        var bobProc = await MarmotChat.TryProcessMessageAsync(bob.Provider, bobConvo, add.CommitGroupEvent);
+        Assert.NotNull(bobProc);
+        Assert.Equal(MarmotMessageKind.Commit, bobProc.Kind);
+        Assert.True(bobProc.EpochAdvanced);
+        // The committer that Bob sees IS Alice — surfaces correctly
+        // through the MLS layer.
+        Assert.Equal(alice.Key.PublicKey, bobProc.Sender);
     }
 }

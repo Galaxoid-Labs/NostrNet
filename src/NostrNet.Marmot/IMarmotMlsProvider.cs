@@ -236,8 +236,16 @@ public enum MlsMessageKind
 /// <param name="ApplicationPayload">For <see cref="MlsMessageKind.Application"/>, the decrypted plaintext; otherwise empty.</param>
 /// <param name="EpochAdvanced"><c>true</c> if a new MLS epoch is now active; the caller should refresh the exporter secret if encrypting outbound traffic.</param>
 /// <param name="NewExporterSecret">When <paramref name="EpochAdvanced"/> is true, the new exporter secret; otherwise <c>null</c>.</param>
+/// <param name="Sender">
+/// For Application and Commit messages, the Nostr pubkey of the
+/// member who produced this message (resolved via OpenMLS's leaf-index
+/// → BasicCredential lookup at processing time, BEFORE any commit is
+/// applied). <c>null</c> for proposals, external senders, or messages
+/// whose sender can't be resolved.
+/// </param>
 public sealed record ProcessedMlsMessage(
     MlsMessageKind Kind,
     byte[] ApplicationPayload,
     bool EpochAdvanced,
-    byte[]? NewExporterSecret);
+    byte[]? NewExporterSecret,
+    PublicKey? Sender = null);
