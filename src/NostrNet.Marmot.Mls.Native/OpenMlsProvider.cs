@@ -23,10 +23,28 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
     private readonly ProviderHandle _handle;
     private bool _disposed;
 
-    /// <summary>Creates a new OpenMLS-backed provider with in-memory state.</summary>
+    /// <summary>Creates a new OpenMLS-backed provider with in-memory state (lost on dispose).</summary>
     public OpenMlsProvider()
     {
         _handle = ProviderHandle.CreateNew();
+    }
+
+    private OpenMlsProvider(ProviderHandle handle)
+    {
+        _handle = handle;
+    }
+
+    /// <summary>
+    /// Opens (or creates) a SQLite-backed provider at <paramref name="path"/>.
+    /// State persists across process restarts — reopening the same path
+    /// recovers all groups, signature keypairs, and HPKE init keys
+    /// previously stored.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Path can't be opened or schema migrations failed.</exception>
+    public static OpenMlsProvider OpenAtPath(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        return new OpenMlsProvider(ProviderHandle.OpenAtPath(path));
     }
 
     /// <summary>Returns the FFI ABI version reported by the native library.</summary>

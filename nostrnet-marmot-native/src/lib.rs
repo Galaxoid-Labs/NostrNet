@@ -43,13 +43,52 @@ pub use provider::*;
 // Provider lifecycle.
 // ──────────────────────────────────────────────────────────────────────
 
-/// Creates a new provider instance. Returns a non-null pointer on
-/// success or null on allocation failure (extremely unlikely).
+/// Creates a new provider instance backed by in-memory SQLite (no
+/// persistence). Returns a non-null pointer on success.
 #[unsafe(no_mangle)]
 pub extern "C" fn marmot_provider_new() -> *mut Provider {
     errors::clear_last_error();
     let provider = Box::new(Provider::new());
     Box::into_raw(provider)
+}
+
+/// Creates a new provider instance backed by a SQLite file at
+/// `path` (UTF-8 NUL-terminated). State persists across process
+/// restarts: re-opening the same file restores all groups,
+/// signature keys, and HPKE init keys.
+///
+/// Returns null on failure (open error, schema migration failure,
+/// invalid UTF-8); see marmot_last_error_message().
+///
+/// # Safety
+/// `path_ptr` must point at a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_provider_open_at_path(path_ptr: *const c_char) -> *mut Provider {
+    errors::clear_last_error();
+    if path_ptr.is_null() {
+        errors::set_last_error(errors::ErrorCode::NullArgument, "path pointer is null");
+        return std::ptr::null_mut();
+    }
+
+    let path_str = unsafe { std::ffi::CStr::from_ptr(path_ptr) };
+    let path = match path_str.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            errors::set_last_error(
+                errors::ErrorCode::InvalidArgument,
+                format!("path is not valid UTF-8: {e:?}"),
+            );
+            return std::ptr::null_mut();
+        }
+    };
+
+    match Provider::open_at_path(std::path::Path::new(path)) {
+        Ok(p) => Box::into_raw(Box::new(p)),
+        Err(e) => {
+            errors::set_last_error(errors::ErrorCode::StorageFailure, e);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Frees a provider created via `marmot_provider_new`. Calling with a

@@ -18,6 +18,12 @@ openmls_rust_crypto = "0.5"
 openmls_traits = "0.5"
 openmls_basic_credential = "0.5"
 openmls_memory_storage = "0.5"
+# SQLite-backed storage. The "bundled" feature on rusqlite compiles
+# SQLite from source so consumers don't need a system SQLite library.
+openmls_sqlite_storage = "0.2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = "1"
+serde_json = "1"
 tls_codec = "0.4"
 
 [profile.release]

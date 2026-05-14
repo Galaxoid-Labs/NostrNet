@@ -9,7 +9,6 @@ use crate::errors::{ErrorCode, fail};
 use crate::provider::Provider;
 
 use openmls::prelude::*;
-use openmls_basic_credential::SignatureKeyPair;
 use tls_codec::{Deserialize, Serialize};
 
 const EXPORTER_LABEL: &str = "marmot";
@@ -49,22 +48,13 @@ pub unsafe fn encrypt_application_message(
         None => return fail(ErrorCode::NullArgument, "plaintext pointer is null"),
     };
 
-    let group_state = match provider.groups.get(&group_id) {
-        Some(s) => s,
-        None => return fail(ErrorCode::UnknownGroupId, "no such group"),
+    let mut group = match crate::group::load_group(&provider.crypto, &group_id) {
+        Ok(g) => g,
+        Err((c, m)) => return fail(c, m),
     };
-
-    let mut sig_bytes = group_state.serialized.as_slice();
-    let signature_keys = match SignatureKeyPair::tls_deserialize(&mut sig_bytes) {
+    let signature_keys = match crate::group::load_own_signature_keys(&provider.crypto, &group) {
         Ok(k) => k,
-        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize SignatureKeyPair: {e:?}")),
-    };
-
-    let group_id_obj = GroupId::from_slice(&group_id);
-    let mut group = match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
-        Ok(Some(g)) => g,
-        Ok(None) => return fail(ErrorCode::UnknownGroupId, "group not in storage"),
-        Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
+        Err((c, m)) => return fail(c, m),
     };
 
     let mls_message = match group.create_message(&provider.crypto, &signature_keys, plaintext) {
@@ -112,11 +102,9 @@ pub unsafe fn process_incoming_message(
         None => return fail(ErrorCode::NullArgument, "message pointer is null"),
     };
 
-    let group_id_obj = GroupId::from_slice(&group_id);
-    let mut group = match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
-        Ok(Some(g)) => g,
-        Ok(None) => return fail(ErrorCode::UnknownGroupId, "group not in storage"),
-        Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
+    let mut group = match crate::group::load_group(&provider.crypto, &group_id) {
+        Ok(g) => g,
+        Err((c, m)) => return fail(c, m),
     };
 
     let mut cursor = bytes;

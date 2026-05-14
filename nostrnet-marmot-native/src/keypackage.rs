@@ -6,6 +6,7 @@ use crate::buffer::{input_slice, return_ffi_buffer};
 use crate::errors::{ErrorCode, fail, set_last_error};
 use crate::provider::Provider;
 
+use crate::provider::MarmotCryptoProvider;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -73,15 +74,9 @@ pub unsafe fn build_keypackage(
     };
 
     match build_keypackage_inner(&provider.crypto, identity, suite, &exts, &props) {
-        Ok((bundle_bytes, kp_ref_bytes, signature_keys)) => {
-            // Stash the signature keys so we can join groups later.
-            provider
-                .keypackages
-                .insert(kp_ref_bytes.clone(), crate::provider::KeyPackageState {
-                    signature_keypair_bytes: signature_keys,
-                    key_package_ref: kp_ref_bytes.clone(),
-                });
-
+        Ok((bundle_bytes, kp_ref_bytes)) => {
+            // The signature keypair was already persisted into OpenMLS
+            // storage by build_member_credential — no separate state to track here.
             unsafe {
                 return_ffi_buffer(bundle_bytes, out_bundle_ptr, out_bundle_len);
                 return_ffi_buffer(kp_ref_bytes, out_kp_ref_ptr, out_kp_ref_len);
@@ -93,12 +88,12 @@ pub unsafe fn build_keypackage(
 }
 
 fn build_keypackage_inner(
-    provider: &OpenMlsRustCrypto,
+    provider: &MarmotCryptoProvider,
     identity: &[u8],
     ciphersuite: Ciphersuite,
     _extensions: &[u16],
     _proposals: &[u16],
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), (ErrorCode, String)> {
+) -> Result<(Vec<u8>, Vec<u8>), (ErrorCode, String)> {
     use openmls_traits::OpenMlsProvider;
     use openmls_traits::types::SignatureScheme;
 
@@ -106,6 +101,8 @@ fn build_keypackage_inner(
     let signature_keys = SignatureKeyPair::new(signature_scheme)
         .map_err(|e| (ErrorCode::CryptoFailure, format!("signature keypair generation: {e:?}")))?;
 
+    // Persist the signature keypair in OpenMLS storage so we can look
+    // it up later (by pubkey) when this member joins a group.
     signature_keys
         .store(provider.storage())
         .map_err(|e| (ErrorCode::StorageFailure, format!("store signature keys: {e:?}")))?;
@@ -127,23 +124,16 @@ fn build_keypackage_inner(
 
     let kp = key_package_bundle.key_package();
 
-    // Wrap the KeyPackage in an MLSMessage envelope.
     let mls_message: MlsMessageOut = kp.clone().into();
     let bundle_bytes = mls_message
         .tls_serialize_detached()
         .map_err(|e| (ErrorCode::SerializationFailure, format!("serialize MLSMessage(KeyPackage): {e:?}")))?;
 
-    // Compute the KeyPackageRef (32-byte hash).
     let kp_ref = kp
         .hash_ref(provider.crypto())
         .map_err(|e| (ErrorCode::CryptoFailure, format!("hash_ref: {e:?}")))?;
 
-    // Serialize the signature keypair for storage (so we can rehydrate at join).
-    let signature_keys_serialized = signature_keys
-        .tls_serialize_detached()
-        .map_err(|e| (ErrorCode::SerializationFailure, format!("serialize SignatureKeyPair: {e:?}")))?;
-
-    Ok((bundle_bytes, kp_ref.as_slice().to_vec(), signature_keys_serialized))
+    Ok((bundle_bytes, kp_ref.as_slice().to_vec()))
 }
 
 /// Parse a KeyPackage bundle (MLSMessage-wrapped) and return its

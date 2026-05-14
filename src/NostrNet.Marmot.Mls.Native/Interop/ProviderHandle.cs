@@ -34,6 +34,20 @@ internal sealed class ProviderHandle : SafeHandle
         return h;
     }
 
+    public static ProviderHandle OpenAtPath(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        var h = new ProviderHandle();
+        IntPtr raw = NativeBindings.ProviderOpenAtPath(path);
+        if (raw == IntPtr.Zero)
+        {
+            Errors.Throw(-8, $"OpenAtPath({path})");
+        }
+
+        h.SetHandle(raw);
+        return h;
+    }
+
     /// <summary>The raw pointer for use in P/Invoke calls. Must NOT be freed by the caller.</summary>
     public IntPtr DangerousPointer => handle;
 

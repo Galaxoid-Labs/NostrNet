@@ -5,12 +5,44 @@
 use crate::buffer::{input_slice, return_ffi_buffer};
 use crate::errors::{ErrorCode, fail};
 use crate::keypackage::ciphersuite_from_u16;
-use crate::provider::{GroupState, Provider};
+use crate::provider::Provider;
 
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
+use crate::provider::MarmotCryptoProvider;
 use openmls_traits::types::SignatureScheme;
 use tls_codec::{Deserialize, Serialize};
+
+/// Loads an MlsGroup by id from storage, returning a uniform error if absent.
+pub(crate) fn load_group(
+    crypto: &MarmotCryptoProvider,
+    group_id: &[u8; 32],
+) -> Result<MlsGroup, (ErrorCode, String)> {
+    let group_id_obj = GroupId::from_slice(group_id);
+    match MlsGroup::load(crypto.storage(), &group_id_obj) {
+        Ok(Some(g)) => Ok(g),
+        Ok(None) => Err((ErrorCode::UnknownGroupId, "group not in storage".into())),
+        Err(e) => Err((ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}"))),
+    }
+}
+
+/// Loads the local member's SignatureKeyPair for a given group by
+/// looking up the own-leaf signature pubkey in OpenMLS storage.
+pub(crate) fn load_own_signature_keys(
+    crypto: &MarmotCryptoProvider,
+    group: &MlsGroup,
+) -> Result<SignatureKeyPair, (ErrorCode, String)> {
+    let own_leaf = group
+        .own_leaf()
+        .ok_or((ErrorCode::InternalError, "group has no own leaf".to_string()))?;
+    let pubkey = own_leaf.signature_key().as_slice();
+    let scheme: SignatureScheme = group.ciphersuite().signature_algorithm();
+    SignatureKeyPair::read(crypto.storage(), pubkey, scheme).ok_or((
+        ErrorCode::StorageFailure,
+        "own signature keypair not in storage (was this member built on a different provider instance?)"
+            .into(),
+    ))
+}
 
 /// Marmot exporter label, per MIP-03.
 const EXPORTER_LABEL: &str = "marmot";
@@ -42,7 +74,7 @@ unsafe fn read_group_id(ptr: *const u8) -> Result<[u8; 32], &'static str> {
 /// by `identity` and the given ciphersuite. The keys are persisted in
 /// the OpenMLS storage before returning.
 fn build_member_credential(
-    crypto: &openmls_rust_crypto::OpenMlsRustCrypto,
+    crypto: &MarmotCryptoProvider,
     identity: &[u8],
     ciphersuite: Ciphersuite,
 ) -> Result<(CredentialWithKey, SignatureKeyPair), (ErrorCode, String)> {
@@ -127,17 +159,10 @@ pub unsafe fn create_group(
         Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("export_secret: {e:?}")),
     };
 
-    // Serialize and stash the signature keys keyed by group id. We need
-    // them for every state-mutating operation.
-    let signature_keys_bytes = match signature_keys.tls_serialize_detached() {
-        Ok(b) => b,
-        Err(e) => return fail(ErrorCode::SerializationFailure, format!("serialize SignatureKeyPair: {e:?}")),
-    };
-
-    provider.groups.insert(group_id, GroupState {
-        serialized: signature_keys_bytes,
-        group_id,
-    });
+    // The signature keys were already persisted in OpenMLS storage by
+    // build_member_credential; the group state is persisted by
+    // MlsGroup::new_with_group_id. No extra bookkeeping needed.
+    let _ = (signature_keys, group);  // suppress unused warnings; values are bound for clarity
 
     unsafe {
         return_ffi_buffer(exporter, out_exporter_ptr, out_exporter_len);
@@ -184,17 +209,6 @@ pub unsafe fn add_members(
         None => return fail(ErrorCode::NullArgument, "keypackage blob pointer is null"),
     };
 
-    // Load the committer's signature keys.
-    let group_state = match provider.groups.get(&group_id) {
-        Some(s) => s,
-        None => return fail(ErrorCode::UnknownGroupId, "no such group"),
-    };
-    let mut sig_bytes = group_state.serialized.as_slice();
-    let signature_keys = match SignatureKeyPair::tls_deserialize(&mut sig_bytes) {
-        Ok(k) => k,
-        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize SignatureKeyPair: {e:?}")),
-    };
-
     // Decode the inbound KeyPackage blob.
     let (key_packages, recipient_identities) = match decode_keypackage_blob(blob, &provider.crypto) {
         Ok(v) => v,
@@ -205,14 +219,14 @@ pub unsafe fn add_members(
         return fail(ErrorCode::InvalidArgument, "must add at least one member");
     }
 
-    // Load the live group from storage.
-    let group_id_obj = GroupId::from_slice(&group_id);
-    let mut group =
-        match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
-            Ok(Some(g)) => g,
-            Ok(None) => return fail(ErrorCode::UnknownGroupId, "group not in storage"),
-            Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
-        };
+    let mut group = match load_group(&provider.crypto, &group_id) {
+        Ok(g) => g,
+        Err((c, m)) => return fail(c, m),
+    };
+    let signature_keys = match load_own_signature_keys(&provider.crypto, &group) {
+        Ok(k) => k,
+        Err((c, m)) => return fail(c, m),
+    };
 
     // Issue the Add proposals + Commit.
     let (commit_msg, welcome_msg, _group_info) = match group.add_members(
@@ -316,23 +330,13 @@ pub unsafe fn remove_members(
         return fail(ErrorCode::InvalidArgument, "must remove at least one member");
     }
 
-    // Load committer signature keys.
-    let group_state = match provider.groups.get(&group_id) {
-        Some(s) => s,
-        None => return fail(ErrorCode::UnknownGroupId, "no such group"),
+    let mut group = match load_group(&provider.crypto, &group_id) {
+        Ok(g) => g,
+        Err((c, m)) => return fail(c, m),
     };
-    let mut sig_bytes = group_state.serialized.as_slice();
-    let signature_keys = match SignatureKeyPair::tls_deserialize(&mut sig_bytes) {
+    let signature_keys = match load_own_signature_keys(&provider.crypto, &group) {
         Ok(k) => k,
-        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize SignatureKeyPair: {e:?}")),
-    };
-
-    // Load the live group.
-    let group_id_obj = GroupId::from_slice(&group_id);
-    let mut group = match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
-        Ok(Some(g)) => g,
-        Ok(None) => return fail(ErrorCode::UnknownGroupId, "group not in storage"),
-        Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
+        Err((c, m)) => return fail(c, m),
     };
 
     // Map each pubkey to a LeafNodeIndex via the group's member list.
@@ -412,21 +416,13 @@ pub unsafe fn self_update(
         Err(msg) => return fail(ErrorCode::NullArgument, msg),
     };
 
-    let group_state = match provider.groups.get(&group_id) {
-        Some(s) => s,
-        None => return fail(ErrorCode::UnknownGroupId, "no such group"),
+    let mut group = match load_group(&provider.crypto, &group_id) {
+        Ok(g) => g,
+        Err((c, m)) => return fail(c, m),
     };
-    let mut sig_bytes = group_state.serialized.as_slice();
-    let signature_keys = match SignatureKeyPair::tls_deserialize(&mut sig_bytes) {
+    let signature_keys = match load_own_signature_keys(&provider.crypto, &group) {
         Ok(k) => k,
-        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize SignatureKeyPair: {e:?}")),
-    };
-
-    let group_id_obj = GroupId::from_slice(&group_id);
-    let mut group = match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
-        Ok(Some(g)) => g,
-        Ok(None) => return fail(ErrorCode::UnknownGroupId, "group not in storage"),
-        Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
+        Err((c, m)) => return fail(c, m),
     };
 
     let commit_bundle = match group.self_update(
@@ -464,7 +460,7 @@ pub unsafe fn self_update(
 /// the parallel list of recipient identity bytes.
 fn decode_keypackage_blob(
     blob: &[u8],
-    crypto: &openmls_rust_crypto::OpenMlsRustCrypto,
+    crypto: &MarmotCryptoProvider,
 ) -> Result<(Vec<KeyPackage>, Vec<Vec<u8>>), (ErrorCode, String)> {
     if blob.len() < 4 {
         return Err((ErrorCode::InvalidArgument, "keypackage blob too short".into()));
@@ -562,10 +558,9 @@ pub unsafe fn join_from_welcome(
         Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("StagedWelcome::into_group: {e:?}")),
     };
 
-    // Record this group locally so subsequent exporter / message calls work.
-    // We don't have a separate "joiner signature keys" path here yet — the
-    // joiner's signature keys were stored in OpenMLS storage when their
-    // KeyPackage was built, so subsequent ops can re-load them.
+    // The joiner's signature keys were already persisted when their
+    // KeyPackage was built. The MlsGroup state has been written to
+    // storage by StagedWelcome::into_group. No further bookkeeping needed.
     let group_id_slice = group.group_id().as_slice();
     let mut group_id = [0u8; 32];
     if group_id_slice.len() != 32 {
@@ -576,40 +571,14 @@ pub unsafe fn join_from_welcome(
     }
     group_id.copy_from_slice(group_id_slice);
 
-    // Look up our signature keys via the joining leaf's signature pubkey.
-    // We need to find which KeyPackage we built that matches this leaf's
-    // signature key. Stored at BuildKeyPackage time.
-    let our_sig_pubkey = group.own_leaf().map(|n| n.signature_key().as_slice().to_vec());
-    let signature_keys_serialized = match our_sig_pubkey {
-        Some(pk) => provider
-            .keypackages
-            .values()
-            .find_map(|kps| {
-                // Each KeyPackageState's signature_keypair_bytes is a
-                // SignatureKeyPair TLS-serialized. We deserialize and
-                // compare the public component.
-                let mut bytes = kps.signature_keypair_bytes.as_slice();
-                let keys = SignatureKeyPair::tls_deserialize(&mut bytes).ok()?;
-                if keys.public() == pk.as_slice() {
-                    Some(kps.signature_keypair_bytes.clone())
-                } else {
-                    None
-                }
-            }),
-        None => None,
-    };
-
-    let Some(sig_bytes) = signature_keys_serialized else {
+    // Sanity-check that our own-leaf signature keypair is reachable
+    // from storage by pubkey — if not, future state changes will fail.
+    if load_own_signature_keys(&provider.crypto, &group).is_err() {
         return fail(
             ErrorCode::InternalError,
-            "could not locate stored signature keys for the joined group's own leaf",
+            "joined leaf signature keys missing from storage (was this provider used to build the KeyPackage?)",
         );
-    };
-
-    provider.groups.insert(group_id, GroupState {
-        serialized: sig_bytes,
-        group_id,
-    });
+    }
 
     let exporter = match group.export_secret(provider.crypto.crypto(), EXPORTER_LABEL, EXPORTER_CONTEXT, EXPORTER_LENGTH) {
         Ok(s) => s,
@@ -643,11 +612,9 @@ pub unsafe fn current_exporter(
         Err(msg) => return fail(ErrorCode::NullArgument, msg),
     };
 
-    let group_id_obj = GroupId::from_slice(&group_id);
-    let group = match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
-        Ok(Some(g)) => g,
-        Ok(None) => return fail(ErrorCode::UnknownGroupId, "no such group in storage"),
-        Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
+    let group = match load_group(&provider.crypto, &group_id) {
+        Ok(g) => g,
+        Err((c, m)) => return fail(c, m),
     };
 
     let exporter = match group.export_secret(provider.crypto.crypto(), EXPORTER_LABEL, EXPORTER_CONTEXT, EXPORTER_LENGTH) {

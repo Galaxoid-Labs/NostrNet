@@ -30,6 +30,9 @@ internal static partial class NativeBindings
     [LibraryImport(Library, EntryPoint = "marmot_provider_new")]
     public static partial IntPtr ProviderNew();
 
+    [LibraryImport(Library, EntryPoint = "marmot_provider_open_at_path", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial IntPtr ProviderOpenAtPath(string path);
+
     [LibraryImport(Library, EntryPoint = "marmot_provider_free")]
     public static partial void ProviderFree(IntPtr handle);
 
