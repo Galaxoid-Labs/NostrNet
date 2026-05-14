@@ -281,7 +281,7 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(text);
         EnsureNotDisposed();
 
-        var ev = await MarmotChat.EncryptMessageAsync(_provider, conversation, text, ct).ConfigureAwait(false);
+        var ev = await MarmotChat.EncryptMessageAsync(_provider, conversation, _identityKey, text, ct).ConfigureAwait(false);
         await _relay.PublishAsync(ev, ct).ConfigureAwait(false);
     }
 

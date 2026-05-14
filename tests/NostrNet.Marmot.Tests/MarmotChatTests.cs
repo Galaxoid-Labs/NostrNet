@@ -182,7 +182,7 @@ public class MarmotChatTests
 
         // 4. Alice sends a message.
         var aliceMsg = await MarmotChat.EncryptMessageAsync(
-            aliceProv, started.Conversation, "hello bob");
+            aliceProv, started.Conversation, aliceKey, "hello bob");
         Assert.Equal(MarmotKinds.GroupEvent, aliceMsg.Kind);
         Assert.True(MarmotChat.LooksLikeGroupEventFor(bobConvo, aliceMsg));
 
@@ -192,7 +192,7 @@ public class MarmotChatTests
 
         // 6. Bob replies.
         var bobMsg = await MarmotChat.EncryptMessageAsync(
-            bobProv, bobConvo, "hi alice");
+            bobProv, bobConvo, bobKey, "hi alice");
         string? gotBob = await MarmotChat.TryDecryptMessageAsync(aliceProv, started.Conversation, bobMsg);
         Assert.Equal("hi alice", gotBob);
     }

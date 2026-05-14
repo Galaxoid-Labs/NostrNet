@@ -39,7 +39,7 @@ public class MembershipChangeTests
         Assert.NotNull(carolConvo);
 
         // Pre-removal sanity round.
-        var preMsg = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, "hi all");
+        var preMsg = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, alice.Key, "hi all");
         Assert.Equal("hi all", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, preMsg));
         Assert.Equal("hi all", await MarmotChat.TryDecryptMessageAsync(carol.Provider, carolConvo, preMsg));
 
@@ -60,7 +60,7 @@ public class MembershipChangeTests
         _ = await MarmotChat.TryProcessMessageAsync(carol.Provider, carolConvo, removed.CommitGroupEvent);
 
         // Post-removal: Alice + Bob can still talk, Carol cannot decrypt.
-        var postMsg = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, "after removal");
+        var postMsg = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, alice.Key, "after removal");
         Assert.Equal("after removal", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, postMsg));
 
         string? carolGot = await MarmotChat.TryDecryptMessageAsync(carol.Provider, carolConvo, postMsg);
@@ -81,7 +81,7 @@ public class MembershipChangeTests
         Assert.NotNull(bobConvo);
 
         // Pre-rotation message.
-        var m1 = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, "before");
+        var m1 = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, alice.Key, "before");
         Assert.Equal("before", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, m1));
 
         // Capture current exporter so we can verify it changes after rotation.
@@ -101,10 +101,10 @@ public class MembershipChangeTests
         Assert.NotEqual(Convert.ToHexString(expBefore), Convert.ToHexString(expAfter));
 
         // Both sides can still talk on the new epoch.
-        var m2 = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, "after");
+        var m2 = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, alice.Key, "after");
         Assert.Equal("after", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, m2));
 
-        var m3 = await MarmotChat.EncryptMessageAsync(bob.Provider, bobConvo, "bob replies");
+        var m3 = await MarmotChat.EncryptMessageAsync(bob.Provider, bobConvo, bob.Key, "bob replies");
         Assert.Equal("bob replies", await MarmotChat.TryDecryptMessageAsync(alice.Provider, started.Conversation, m3));
     }
 }

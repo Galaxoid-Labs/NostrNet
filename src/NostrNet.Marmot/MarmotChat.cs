@@ -27,6 +27,8 @@
 // real state lives in the provider, keyed by group id.
 
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using NostrNet.Events;
 using NostrNet.Keys;
 using NostrNet.Marmot.Events;
@@ -343,29 +345,119 @@ public static class MarmotChat
     }
 
     /// <summary>
+    /// Marmot chat-message rumor kind per MIP-03 / NIP-C7.
+    /// </summary>
+    public const int ChatMessageRumorKind = 9;
+
+    /// <summary>
     /// Encrypts <paramref name="plaintext"/> as an application message in
     /// <paramref name="conversation"/> and returns a kind-445 GroupEvent
     /// ready to publish.
+    ///
+    /// Per Marmot MIP-03 the plaintext fed into MLS is a JSON-serialized
+    /// unsigned Nostr "rumor" event (kind <see cref="ChatMessageRumorKind"/>),
+    /// authored by <paramref name="senderKey"/>. The rumor carries the
+    /// real sender pubkey so that other Marmot clients (mdk-core / White
+    /// Noise) can attribute the message; the MLS layer authenticates it.
     /// </summary>
     public static async Task<NostrEvent> EncryptMessageAsync(
         IMarmotMlsProvider provider,
         MarmotConversation conversation,
+        PrivateKey senderKey,
         string plaintext,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(conversation);
+        ArgumentNullException.ThrowIfNull(senderKey);
         ArgumentNullException.ThrowIfNull(plaintext);
 
+        long createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        byte[] rumorJson = SerializeChatRumor(
+            senderKey.PublicKey, createdAt, plaintext);
+
         byte[] mlsBytes = await provider.EncryptApplicationMessageAsync(
-            conversation.NostrGroupId,
-            SysEncoding.UTF8.GetBytes(plaintext),
-            ct).ConfigureAwait(false);
+            conversation.NostrGroupId, rumorJson, ct).ConfigureAwait(false);
 
         byte[] exporter = await provider.CurrentExporterSecretAsync(
             conversation.NostrGroupId, ct).ConfigureAwait(false);
 
         return GroupEvent.Build(mlsBytes, exporter, conversation.NostrGroupId);
+    }
+
+    /// <summary>
+    /// Build the JSON wire form of a Marmot chat-message rumor (an
+    /// unsigned Nostr event with id but no sig). Exposed internally so
+    /// the tests + receive path can produce / verify identical bytes.
+    /// </summary>
+    internal static byte[] SerializeChatRumor(
+        PublicKey senderPubkey,
+        long createdAt,
+        string content)
+    {
+        // Empty tags array — Marmot chat messages currently have no tags.
+        var tags = Array.Empty<IReadOnlyList<string>>();
+        EventId id = EventSerializer.ComputeId(
+            senderPubkey, createdAt, ChatMessageRumorKind, tags, content);
+
+        using var ms = new MemoryStream();
+        var options = new JsonWriterOptions
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        };
+        using (var writer = new Utf8JsonWriter(ms, options))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("id", id.ToHex());
+            writer.WriteString("pubkey", senderPubkey.ToHex());
+            writer.WriteNumber("created_at", createdAt);
+            writer.WriteNumber("kind", ChatMessageRumorKind);
+            writer.WriteStartArray("tags");
+            writer.WriteEndArray();
+            writer.WriteString("content", content);
+            writer.WriteEndObject();
+        }
+
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// Extracts the human-readable text from a decrypted Marmot
+    /// application-message plaintext. Per MIP-03 the plaintext is the
+    /// JSON of an unsigned Nostr event; the chat content is the
+    /// <c>content</c> field. Returns the input unchanged when the
+    /// plaintext doesn't look like a rumor JSON, so legacy / non-Marmot
+    /// senders still surface something readable.
+    /// </summary>
+    internal static (string Content, PublicKey? Sender) ExtractChatRumor(byte[] plaintextBytes)
+    {
+        ArgumentNullException.ThrowIfNull(plaintextBytes);
+        if (plaintextBytes.Length == 0 || plaintextBytes[0] != (byte)'{')
+        {
+            return (SysEncoding.UTF8.GetString(plaintextBytes), null);
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(plaintextBytes);
+            var root = doc.RootElement;
+            string content = root.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
+                ? c.GetString() ?? string.Empty
+                : SysEncoding.UTF8.GetString(plaintextBytes);
+            PublicKey? sender = null;
+            if (root.TryGetProperty("pubkey", out var p) && p.ValueKind == JsonValueKind.String
+                && p.GetString() is string hex && hex.Length == 64)
+            {
+                try { sender = PublicKey.FromHex(hex); }
+                catch { sender = null; }
+            }
+
+            return (content, sender);
+        }
+        catch (JsonException)
+        {
+            return (SysEncoding.UTF8.GetString(plaintextBytes), null);
+        }
     }
 
     /// <summary>
@@ -412,7 +504,10 @@ public static class MarmotChat
                 decrypted.MlsMessageBytes,
                 ct).ConfigureAwait(false);
 
-            return SysEncoding.UTF8.GetString(processed.ApplicationPayload);
+            // Per MIP-03 the MLS payload is a JSON rumor; extract the
+            // human-readable text from its `content` field. Returns the
+            // raw UTF-8 bytes when the payload is not a rumor.
+            return ExtractChatRumor(processed.ApplicationPayload).Content;
         }
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException
                                      or System.IO.InvalidDataException
@@ -497,11 +592,20 @@ public static class MarmotChat
             _ => MarmotMessageKind.Application,
         };
 
-        string? plaintext = kind == MarmotMessageKind.Application
-            ? SysEncoding.UTF8.GetString(processed.ApplicationPayload)
-            : null;
+        string? plaintext = null;
+        PublicKey? sender = processed.Sender;
+        if (kind == MarmotMessageKind.Application)
+        {
+            var (content, rumorSender) = ExtractChatRumor(processed.ApplicationPayload);
+            plaintext = content;
+            // Prefer the MLS-resolved sender when available; the rumor
+            // pubkey is unsigned and could be spoofed, but a Marmot-
+            // conforming peer always sets it to the same identity the
+            // MLS layer authenticates, so it's useful as a fallback.
+            sender ??= rumorSender;
+        }
 
-        return new MarmotInboundMessage(kind, plaintext, processed.EpochAdvanced, processed.Sender);
+        return new MarmotInboundMessage(kind, plaintext, processed.EpochAdvanced, sender);
     }
 
     /// <summary>

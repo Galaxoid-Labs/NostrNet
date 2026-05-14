@@ -51,7 +51,7 @@ public class PersistenceTests
 
                 slot1Message = "from before restart";
                 slot1MessageBytes = (await MarmotChat.EncryptMessageAsync(
-                    aliceProv, started.Conversation, slot1Message)).Content.FromBase64();
+                    aliceProv, started.Conversation, aliceKey, slot1Message)).Content.FromBase64();
                 // The kind-445 GroupEvent payload above isn't the MLSMessage —
                 // it's the OUTER (ChaCha20-Poly1305-encrypted with exporter)
                 // ciphertext. We'll re-decrypt it on the reopened bob below.
@@ -72,12 +72,12 @@ public class PersistenceTests
             // Send and decrypt a NEW message through the reopened providers.
             var conv1 = new MarmotConversation(groupId, bobKey.PublicKey);
             var conv2 = new MarmotConversation(groupId, aliceKey.PublicKey);
-            var msg = await MarmotChat.EncryptMessageAsync(aliceProv2, conv1, "post-reopen ping");
+            var msg = await MarmotChat.EncryptMessageAsync(aliceProv2, conv1, aliceKey, "post-reopen ping");
             Assert.Equal("post-reopen ping",
                 await MarmotChat.TryDecryptMessageAsync(bobProv2, conv2, msg));
 
             // Bidirectional also works on the reopened providers.
-            var reply = await MarmotChat.EncryptMessageAsync(bobProv2, conv2, "post-reopen pong");
+            var reply = await MarmotChat.EncryptMessageAsync(bobProv2, conv2, bobKey, "post-reopen pong");
             Assert.Equal("post-reopen pong",
                 await MarmotChat.TryDecryptMessageAsync(aliceProv2, conv1, reply));
         }
@@ -122,7 +122,7 @@ public class PersistenceTests
             Assert.NotNull(bobConvo);
 
             // Round-trip a message to prove it works.
-            var msg = await MarmotChat.EncryptMessageAsync(aliceProv, started.Conversation, "hi reopened bob");
+            var msg = await MarmotChat.EncryptMessageAsync(aliceProv, started.Conversation, aliceKey, "hi reopened bob");
             Assert.Equal("hi reopened bob",
                 await MarmotChat.TryDecryptMessageAsync(bobProv2, bobConvo, msg));
         }

@@ -41,12 +41,12 @@ public class MarmotChatIntegrationTests
         Assert.Equal(aliceKey.PublicKey, bobConvo.Peer);
 
         // Alice → Bob.
-        var msg1 = await MarmotChat.EncryptMessageAsync(alice, started.Conversation, "hello bob");
+        var msg1 = await MarmotChat.EncryptMessageAsync(alice, started.Conversation, aliceKey, "hello bob");
         string? got1 = await MarmotChat.TryDecryptMessageAsync(bob, bobConvo, msg1);
         Assert.Equal("hello bob", got1);
 
         // Bob → Alice.
-        var msg2 = await MarmotChat.EncryptMessageAsync(bob, bobConvo, "hi alice");
+        var msg2 = await MarmotChat.EncryptMessageAsync(bob, bobConvo, bobKey, "hi alice");
         string? got2 = await MarmotChat.TryDecryptMessageAsync(alice, started.Conversation, msg2);
         Assert.Equal("hi alice", got2);
 
@@ -55,8 +55,8 @@ public class MarmotChatIntegrationTests
         {
             string aT = $"alice #{i}";
             string bT = $"bob #{i}";
-            var aSent = await MarmotChat.EncryptMessageAsync(alice, started.Conversation, aT);
-            var bSent = await MarmotChat.EncryptMessageAsync(bob, bobConvo, bT);
+            var aSent = await MarmotChat.EncryptMessageAsync(alice, started.Conversation, aliceKey, aT);
+            var bSent = await MarmotChat.EncryptMessageAsync(bob, bobConvo, bobKey, bT);
 
             Assert.Equal(aT, await MarmotChat.TryDecryptMessageAsync(bob, bobConvo, aSent));
             Assert.Equal(bT, await MarmotChat.TryDecryptMessageAsync(alice, started.Conversation, bSent));
@@ -77,7 +77,7 @@ public class MarmotChatIntegrationTests
         var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob, bobKey, started.WelcomeGiftWrap);
         Assert.NotNull(bobConvo);
 
-        var msg = await MarmotChat.EncryptMessageAsync(alice, started.Conversation, "once");
+        var msg = await MarmotChat.EncryptMessageAsync(alice, started.Conversation, aliceKey, "once");
         Assert.Equal("once", await MarmotChat.TryDecryptMessageAsync(bob, bobConvo, msg));
 
         // OpenMLS rejects replays internally; TryDecrypt swallows the failure.

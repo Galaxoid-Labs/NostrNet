@@ -60,17 +60,17 @@ public class GroupChatTests
         Assert.Equal(started.Conversation.NostrGroupId, carolConvo.NostrGroupId);
 
         // Alice → group: Bob and Carol both decrypt.
-        var aliceMsg = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, "hello everyone");
+        var aliceMsg = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, alice.Key, "hello everyone");
         Assert.Equal("hello everyone", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, aliceMsg));
         Assert.Equal("hello everyone", await MarmotChat.TryDecryptMessageAsync(carol.Provider, carolConvo, aliceMsg));
 
         // Bob → group: Alice and Carol decrypt.
-        var bobMsg = await MarmotChat.EncryptMessageAsync(bob.Provider, bobConvo, "bob's chiming in");
+        var bobMsg = await MarmotChat.EncryptMessageAsync(bob.Provider, bobConvo, bob.Key, "bob's chiming in");
         Assert.Equal("bob's chiming in", await MarmotChat.TryDecryptMessageAsync(alice.Provider, started.Conversation, bobMsg));
         Assert.Equal("bob's chiming in", await MarmotChat.TryDecryptMessageAsync(carol.Provider, carolConvo, bobMsg));
 
         // Carol → group: Alice and Bob decrypt.
-        var carolMsg = await MarmotChat.EncryptMessageAsync(carol.Provider, carolConvo, "carol here");
+        var carolMsg = await MarmotChat.EncryptMessageAsync(carol.Provider, carolConvo, carol.Key, "carol here");
         Assert.Equal("carol here", await MarmotChat.TryDecryptMessageAsync(alice.Provider, started.Conversation, carolMsg));
         Assert.Equal("carol here", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, carolMsg));
     }
@@ -95,7 +95,7 @@ public class GroupChatTests
         Assert.NotNull(carolConvo);
 
         // A pre-add round so we know everyone's on epoch 1.
-        var pre = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, "hi");
+        var pre = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, alice.Key, "hi");
         Assert.Equal("hi", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, pre));
         Assert.Equal("hi", await MarmotChat.TryDecryptMessageAsync(carol.Provider, carolConvo, pre));
 
@@ -120,12 +120,12 @@ public class GroupChatTests
         Assert.True(carolProcessed.EpochAdvanced);
 
         // Now all four can exchange messages on the new epoch.
-        var fromAlice = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, "welcome dave");
+        var fromAlice = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, alice.Key, "welcome dave");
         Assert.Equal("welcome dave", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, fromAlice));
         Assert.Equal("welcome dave", await MarmotChat.TryDecryptMessageAsync(carol.Provider, carolConvo, fromAlice));
         Assert.Equal("welcome dave", await MarmotChat.TryDecryptMessageAsync(dave.Provider, daveConvo, fromAlice));
 
-        var fromDave = await MarmotChat.EncryptMessageAsync(dave.Provider, daveConvo, "thanks!");
+        var fromDave = await MarmotChat.EncryptMessageAsync(dave.Provider, daveConvo, dave.Key, "thanks!");
         Assert.Equal("thanks!", await MarmotChat.TryDecryptMessageAsync(alice.Provider, started.Conversation, fromDave));
         Assert.Equal("thanks!", await MarmotChat.TryDecryptMessageAsync(bob.Provider, bobConvo, fromDave));
         Assert.Equal("thanks!", await MarmotChat.TryDecryptMessageAsync(carol.Provider, carolConvo, fromDave));
@@ -143,7 +143,7 @@ public class GroupChatTests
         var bobConvo = await MarmotChat.TryAcceptInviteAsync(bob.Provider, bob.Key, started.WelcomeGiftWrap);
         Assert.NotNull(bobConvo);
 
-        var msg = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, "hi");
+        var msg = await MarmotChat.EncryptMessageAsync(alice.Provider, started.Conversation, alice.Key, "hi");
         var processed = await MarmotChat.TryProcessMessageAsync(bob.Provider, bobConvo, msg);
 
         Assert.NotNull(processed);

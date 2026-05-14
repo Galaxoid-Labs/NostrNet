@@ -418,11 +418,11 @@ async Task<int> MarmotMlsSmokeAsync()
     }
 
     // Bidirectional ping-pong over the channel.
-    var aliceToBob = await MarmotChat.EncryptMessageAsync(aliceProv, started.Conversation, "hello bob");
+    var aliceToBob = await MarmotChat.EncryptMessageAsync(aliceProv, started.Conversation, aliceKey, "hello bob");
     string? gotByBob = await MarmotChat.TryDecryptMessageAsync(bobProv, bobConvo, aliceToBob);
     Console.WriteLine($"alice → bob: {gotByBob}");
 
-    var bobToAlice = await MarmotChat.EncryptMessageAsync(bobProv, bobConvo, "hi alice");
+    var bobToAlice = await MarmotChat.EncryptMessageAsync(bobProv, bobConvo, bobKey, "hi alice");
     string? gotByAlice = await MarmotChat.TryDecryptMessageAsync(aliceProv, started.Conversation, bobToAlice);
     Console.WriteLine($"bob   → alice: {gotByAlice}");
 
