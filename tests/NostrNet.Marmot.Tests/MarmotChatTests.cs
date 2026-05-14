@@ -112,6 +112,14 @@ public class MarmotChatTests
                 CurrentExporterSecret: secret));
         }
 
+        public Task<RemoveMembersResult> RemoveMembersAsync(
+            ReadOnlyMemory<byte> groupId, IReadOnlyList<PublicKey> peers, CancellationToken ct = default)
+            => throw new NotImplementedException();
+
+        public Task<SelfUpdateResult> SelfUpdateAsync(
+            ReadOnlyMemory<byte> groupId, CancellationToken ct = default)
+            => throw new NotImplementedException();
+
         public Task<byte[]> BuildSelfRemoveProposalAsync(
             ReadOnlyMemory<byte> groupId, CancellationToken ct = default)
             => throw new NotImplementedException();

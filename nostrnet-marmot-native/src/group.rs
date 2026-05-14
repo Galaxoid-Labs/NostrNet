@@ -266,6 +266,199 @@ pub unsafe fn add_members(
     ErrorCode::Success as i32
 }
 
+/// Remove one or more members from the group by their Nostr pubkeys.
+/// Produces a Commit MLSMessage that existing members process to apply
+/// the removal and advance the epoch.
+///
+/// Input `pubkeys_blob` format: `[u32 BE count] [32 bytes pubkey_0] ...`
+///
+/// # Safety
+/// Standard FFI safety.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn remove_members(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+    pubkeys_blob_ptr: *const u8,
+    pubkeys_blob_len: usize,
+    out_commit_ptr: *mut *mut u8,
+    out_commit_len: *mut usize,
+    out_exporter_ptr: *mut *mut u8,
+    out_exporter_len: *mut usize,
+) -> i32 {
+    if provider.is_null() {
+        return fail(ErrorCode::NullArgument, "provider handle is null");
+    }
+    let provider = unsafe { &mut *provider };
+
+    let group_id = match unsafe { read_group_id(nostr_group_id_ptr) } {
+        Ok(g) => g,
+        Err(msg) => return fail(ErrorCode::NullArgument, msg),
+    };
+
+    let blob = match unsafe { input_slice(pubkeys_blob_ptr, pubkeys_blob_len) } {
+        Some(s) => s,
+        None => return fail(ErrorCode::NullArgument, "pubkeys blob pointer is null"),
+    };
+
+    if blob.len() < 4 {
+        return fail(ErrorCode::InvalidArgument, "pubkeys blob too short");
+    }
+    let count = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+    let expected_len = 4 + 32 * count;
+    if blob.len() != expected_len {
+        return fail(
+            ErrorCode::InvalidArgument,
+            format!("pubkeys blob length {} != expected {expected_len}", blob.len()),
+        );
+    }
+
+    if count == 0 {
+        return fail(ErrorCode::InvalidArgument, "must remove at least one member");
+    }
+
+    // Load committer signature keys.
+    let group_state = match provider.groups.get(&group_id) {
+        Some(s) => s,
+        None => return fail(ErrorCode::UnknownGroupId, "no such group"),
+    };
+    let mut sig_bytes = group_state.serialized.as_slice();
+    let signature_keys = match SignatureKeyPair::tls_deserialize(&mut sig_bytes) {
+        Ok(k) => k,
+        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize SignatureKeyPair: {e:?}")),
+    };
+
+    // Load the live group.
+    let group_id_obj = GroupId::from_slice(&group_id);
+    let mut group = match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
+        Ok(Some(g)) => g,
+        Ok(None) => return fail(ErrorCode::UnknownGroupId, "group not in storage"),
+        Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
+    };
+
+    // Map each pubkey to a LeafNodeIndex via the group's member list.
+    let mut leaf_indices = Vec::with_capacity(count);
+    for i in 0..count {
+        let off = 4 + 32 * i;
+        let pubkey = &blob[off..off + 32];
+
+        let found = group.members().find(|m| {
+            BasicCredential::try_from(m.credential.clone())
+                .map(|b| b.identity() == pubkey)
+                .unwrap_or(false)
+        });
+
+        match found {
+            Some(member) => leaf_indices.push(member.index),
+            None => {
+                return fail(
+                    ErrorCode::InvalidArgument,
+                    format!("member with pubkey #{i} not found in group"),
+                );
+            }
+        }
+    }
+
+    let (commit_msg, _welcome_opt, _group_info) = match group.remove_members(
+        &provider.crypto,
+        &signature_keys,
+        &leaf_indices,
+    ) {
+        Ok(t) => t,
+        Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("remove_members: {e:?}")),
+    };
+
+    if let Err(e) = group.merge_pending_commit(&provider.crypto) {
+        return fail(ErrorCode::OpenMlsFailure, format!("merge_pending_commit: {e:?}"));
+    }
+
+    let exporter = match group.export_secret(provider.crypto.crypto(), EXPORTER_LABEL, EXPORTER_CONTEXT, EXPORTER_LENGTH) {
+        Ok(s) => s,
+        Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("export_secret: {e:?}")),
+    };
+
+    let commit_bytes = match commit_msg.tls_serialize_detached() {
+        Ok(b) => b,
+        Err(e) => return fail(ErrorCode::SerializationFailure, format!("serialize Commit: {e:?}")),
+    };
+
+    unsafe {
+        return_ffi_buffer(commit_bytes, out_commit_ptr, out_commit_len);
+        return_ffi_buffer(exporter, out_exporter_ptr, out_exporter_len);
+    }
+    ErrorCode::Success as i32
+}
+
+/// Rotates the calling member's leaf keys via OpenMLS `self_update`.
+/// Produces a Commit MLSMessage that all existing members process to
+/// advance the epoch.
+///
+/// # Safety
+/// Standard FFI safety.
+pub unsafe fn self_update(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+    out_commit_ptr: *mut *mut u8,
+    out_commit_len: *mut usize,
+    out_exporter_ptr: *mut *mut u8,
+    out_exporter_len: *mut usize,
+) -> i32 {
+    if provider.is_null() {
+        return fail(ErrorCode::NullArgument, "provider handle is null");
+    }
+    let provider = unsafe { &mut *provider };
+
+    let group_id = match unsafe { read_group_id(nostr_group_id_ptr) } {
+        Ok(g) => g,
+        Err(msg) => return fail(ErrorCode::NullArgument, msg),
+    };
+
+    let group_state = match provider.groups.get(&group_id) {
+        Some(s) => s,
+        None => return fail(ErrorCode::UnknownGroupId, "no such group"),
+    };
+    let mut sig_bytes = group_state.serialized.as_slice();
+    let signature_keys = match SignatureKeyPair::tls_deserialize(&mut sig_bytes) {
+        Ok(k) => k,
+        Err(e) => return fail(ErrorCode::SerializationFailure, format!("deserialize SignatureKeyPair: {e:?}")),
+    };
+
+    let group_id_obj = GroupId::from_slice(&group_id);
+    let mut group = match MlsGroup::load(provider.crypto.storage(), &group_id_obj) {
+        Ok(Some(g)) => g,
+        Ok(None) => return fail(ErrorCode::UnknownGroupId, "group not in storage"),
+        Err(e) => return fail(ErrorCode::StorageFailure, format!("MlsGroup::load: {e:?}")),
+    };
+
+    let commit_bundle = match group.self_update(
+        &provider.crypto,
+        &signature_keys,
+        LeafNodeParameters::default(),
+    ) {
+        Ok(b) => b,
+        Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("self_update: {e:?}")),
+    };
+
+    if let Err(e) = group.merge_pending_commit(&provider.crypto) {
+        return fail(ErrorCode::OpenMlsFailure, format!("merge_pending_commit: {e:?}"));
+    }
+
+    let exporter = match group.export_secret(provider.crypto.crypto(), EXPORTER_LABEL, EXPORTER_CONTEXT, EXPORTER_LENGTH) {
+        Ok(s) => s,
+        Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("export_secret: {e:?}")),
+    };
+
+    let commit_bytes = match commit_bundle.commit().tls_serialize_detached() {
+        Ok(b) => b,
+        Err(e) => return fail(ErrorCode::SerializationFailure, format!("serialize Commit: {e:?}")),
+    };
+
+    unsafe {
+        return_ffi_buffer(commit_bytes, out_commit_ptr, out_commit_len);
+        return_ffi_buffer(exporter, out_exporter_ptr, out_exporter_len);
+    }
+    ErrorCode::Success as i32
+}
+
 /// Decode the length-prefixed blob format `[u32 BE count] [u32 BE len_0]
 /// [bytes_0] ...` into a Vec<KeyPackage>, validating each. Also returns
 /// the parallel list of recipient identity bytes.

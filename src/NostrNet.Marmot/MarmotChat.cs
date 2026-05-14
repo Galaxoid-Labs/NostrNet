@@ -70,6 +70,23 @@ public sealed record MarmotPeerAdded(
     NostrEvent WelcomeGiftWrap,
     NostrEvent CommitGroupEvent);
 
+/// <summary>The output of <see cref="MarmotChat.RemovePeerAsync"/>.</summary>
+/// <param name="CommitGroupEvent">
+/// kind-445 GroupEvent carrying the Remove+Commit MLSMessage, encrypted
+/// with the previous epoch's exporter so existing members (including
+/// the to-be-removed one) can decrypt it. The removed member will
+/// process the Commit, learn they were removed, and fail future
+/// decrypts.
+/// </param>
+public sealed record MarmotPeerRemoved(NostrEvent CommitGroupEvent);
+
+/// <summary>The output of <see cref="MarmotChat.RotateKeysAsync"/>.</summary>
+/// <param name="CommitGroupEvent">
+/// kind-445 GroupEvent carrying the self-update Commit, encrypted with
+/// the previous epoch's exporter so existing members can process it.
+/// </param>
+public sealed record MarmotKeysRotated(NostrEvent CommitGroupEvent);
+
 /// <summary>Classification of an inbound MLS message after decryption + processing.</summary>
 public enum MarmotMessageKind
 {
@@ -539,6 +556,70 @@ public static class MarmotChat
             nostrGroupId: conversation.NostrGroupId);
 
         return new MarmotPeerAdded(welcomeGiftWrap, commitGroupEvent);
+    }
+
+    /// <summary>
+    /// Removes one or more peers from an existing conversation. The
+    /// returned Commit GroupEvent is encrypted with the previous epoch's
+    /// exporter so that existing members AND the about-to-be-removed
+    /// peers can decrypt it; the latter then learn (via processing the
+    /// Commit) that they were removed and fail subsequent decrypts.
+    /// </summary>
+    public static async Task<MarmotPeerRemoved> RemovePeerAsync(
+        IMarmotMlsProvider provider,
+        MarmotConversation conversation,
+        IReadOnlyList<PublicKey> peersToRemove,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        ArgumentNullException.ThrowIfNull(conversation);
+        ArgumentNullException.ThrowIfNull(peersToRemove);
+
+        if (peersToRemove.Count == 0)
+        {
+            throw new ArgumentException("must remove at least one peer", nameof(peersToRemove));
+        }
+
+        byte[] oldExporter = await provider
+            .CurrentExporterSecretAsync(conversation.NostrGroupId, ct)
+            .ConfigureAwait(false);
+
+        var result = await provider.RemoveMembersAsync(
+            conversation.NostrGroupId, peersToRemove, ct).ConfigureAwait(false);
+
+        var commitGroupEvent = GroupEvent.Build(
+            mlsMessageBytes: result.CommitMlsMessageBytes,
+            exporterSecret: oldExporter,
+            nostrGroupId: conversation.NostrGroupId);
+
+        return new MarmotPeerRemoved(commitGroupEvent);
+    }
+
+    /// <summary>
+    /// Rotates the local member's leaf keys via MLS self-update. The
+    /// returned Commit GroupEvent is encrypted with the previous epoch's
+    /// exporter so all existing members can process it.
+    /// </summary>
+    public static async Task<MarmotKeysRotated> RotateKeysAsync(
+        IMarmotMlsProvider provider,
+        MarmotConversation conversation,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        ArgumentNullException.ThrowIfNull(conversation);
+
+        byte[] oldExporter = await provider
+            .CurrentExporterSecretAsync(conversation.NostrGroupId, ct)
+            .ConfigureAwait(false);
+
+        var result = await provider.SelfUpdateAsync(conversation.NostrGroupId, ct).ConfigureAwait(false);
+
+        var commitGroupEvent = GroupEvent.Build(
+            mlsMessageBytes: result.CommitMlsMessageBytes,
+            exporterSecret: oldExporter,
+            nostrGroupId: conversation.NostrGroupId);
+
+        return new MarmotKeysRotated(commitGroupEvent);
     }
 
     /// <summary>

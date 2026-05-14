@@ -92,6 +92,21 @@ internal static partial class NativeBindings
         IntPtr* outGroupIdPtr, nuint* outGroupIdLen,
         IntPtr* outExporterPtr, nuint* outExporterLen);
 
+    [LibraryImport(Library, EntryPoint = "marmot_remove_members")]
+    public static unsafe partial int RemoveMembers(
+        IntPtr provider,
+        byte* nostrGroupIdPtr,
+        byte* pubkeysBlobPtr, nuint pubkeysBlobLen,
+        IntPtr* outCommitPtr, nuint* outCommitLen,
+        IntPtr* outExporterPtr, nuint* outExporterLen);
+
+    [LibraryImport(Library, EntryPoint = "marmot_self_update")]
+    public static unsafe partial int SelfUpdate(
+        IntPtr provider,
+        byte* nostrGroupIdPtr,
+        IntPtr* outCommitPtr, nuint* outCommitLen,
+        IntPtr* outExporterPtr, nuint* outExporterLen);
+
     [LibraryImport(Library, EntryPoint = "marmot_current_exporter")]
     public static unsafe partial int CurrentExporter(
         IntPtr provider,

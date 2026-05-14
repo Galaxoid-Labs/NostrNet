@@ -266,6 +266,59 @@ pub unsafe extern "C" fn marmot_join_from_welcome(
 }
 
 /// # Safety
+/// See `group::remove_members`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn marmot_remove_members(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+    pubkeys_blob_ptr: *const u8,
+    pubkeys_blob_len: usize,
+    out_commit_ptr: *mut *mut u8,
+    out_commit_len: *mut usize,
+    out_exporter_ptr: *mut *mut u8,
+    out_exporter_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        group::remove_members(
+            provider,
+            nostr_group_id_ptr,
+            pubkeys_blob_ptr,
+            pubkeys_blob_len,
+            out_commit_ptr,
+            out_commit_len,
+            out_exporter_ptr,
+            out_exporter_len,
+        )
+    }
+}
+
+/// # Safety
+/// See `group::self_update`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_self_update(
+    provider: *mut Provider,
+    nostr_group_id_ptr: *const u8,
+    out_commit_ptr: *mut *mut u8,
+    out_commit_len: *mut usize,
+    out_exporter_ptr: *mut *mut u8,
+    out_exporter_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        group::self_update(
+            provider,
+            nostr_group_id_ptr,
+            out_commit_ptr,
+            out_commit_len,
+            out_exporter_ptr,
+            out_exporter_len,
+        )
+    }
+}
+
+/// # Safety
 /// See `group::current_exporter`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn marmot_current_exporter(

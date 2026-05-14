@@ -330,6 +330,87 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
     }
 
     /// <inheritdoc/>
+    public unsafe Task<RemoveMembersResult> RemoveMembersAsync(
+        ReadOnlyMemory<byte> nostrGroupId,
+        IReadOnlyList<PublicKey> peerPubkeys,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(peerPubkeys);
+        if (nostrGroupId.Length != 32)
+        {
+            throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(nostrGroupId));
+        }
+
+        if (peerPubkeys.Count == 0)
+        {
+            throw new ArgumentException("must remove at least one member", nameof(peerPubkeys));
+        }
+
+        // Encode [u32 BE count] [32 bytes pubkey_0] ...
+        byte[] blob = new byte[4 + 32 * peerPubkeys.Count];
+        WriteUInt32BigEndian(blob, 0, (uint)peerPubkeys.Count);
+        for (int i = 0; i < peerPubkeys.Count; i++)
+        {
+            peerPubkeys[i].CopyTo(blob.AsSpan(4 + 32 * i, 32));
+        }
+
+        IntPtr commitPtr = IntPtr.Zero; nuint commitLen = 0;
+        IntPtr expPtr = IntPtr.Zero; nuint expLen = 0;
+        int rc;
+        fixed (byte* gidPin = nostrGroupId.Span)
+        fixed (byte* blobPin = blob)
+        {
+            rc = NativeBindings.RemoveMembers(
+                _handle.DangerousPointer,
+                gidPin,
+                blobPin, (nuint)blob.Length,
+                &commitPtr, &commitLen,
+                &expPtr, &expLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(RemoveMembersAsync));
+        }
+
+        return Task.FromResult(new RemoveMembersResult(
+            CommitMlsMessageBytes: FfiBuffer.CopyAndFree(commitPtr, commitLen),
+            NewExporterSecret: FfiBuffer.CopyAndFree(expPtr, expLen)));
+    }
+
+    /// <inheritdoc/>
+    public unsafe Task<SelfUpdateResult> SelfUpdateAsync(
+        ReadOnlyMemory<byte> nostrGroupId,
+        CancellationToken ct = default)
+    {
+        if (nostrGroupId.Length != 32)
+        {
+            throw new ArgumentException("nostr_group_id must be 32 bytes.", nameof(nostrGroupId));
+        }
+
+        IntPtr commitPtr = IntPtr.Zero; nuint commitLen = 0;
+        IntPtr expPtr = IntPtr.Zero; nuint expLen = 0;
+        int rc;
+        fixed (byte* gidPin = nostrGroupId.Span)
+        {
+            rc = NativeBindings.SelfUpdate(
+                _handle.DangerousPointer,
+                gidPin,
+                &commitPtr, &commitLen,
+                &expPtr, &expLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(SelfUpdateAsync));
+        }
+
+        return Task.FromResult(new SelfUpdateResult(
+            CommitMlsMessageBytes: FfiBuffer.CopyAndFree(commitPtr, commitLen),
+            NewExporterSecret: FfiBuffer.CopyAndFree(expPtr, expLen)));
+    }
+
+    /// <inheritdoc/>
     public Task<byte[]> BuildSelfRemoveProposalAsync(
         ReadOnlyMemory<byte> nostrGroupId,
         CancellationToken ct = default)

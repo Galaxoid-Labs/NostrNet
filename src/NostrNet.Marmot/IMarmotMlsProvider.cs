@@ -100,6 +100,25 @@ public interface IMarmotMlsProvider
         CancellationToken ct = default);
 
     /// <summary>
+    /// Issue Remove proposals + Commit for the specified member pubkeys.
+    /// Produces a Commit MLSMessage for existing members to process.
+    /// Returns the new exporter secret for the post-removal epoch.
+    /// </summary>
+    Task<RemoveMembersResult> RemoveMembersAsync(
+        ReadOnlyMemory<byte> nostrGroupId,
+        IReadOnlyList<PublicKey> peerPubkeys,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Rotate the calling member's leaf keys via an MLS self-update.
+    /// Produces a Commit MLSMessage for existing members to process.
+    /// Returns the new exporter secret for the post-update epoch.
+    /// </summary>
+    Task<SelfUpdateResult> SelfUpdateAsync(
+        ReadOnlyMemory<byte> nostrGroupId,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Build a SelfRemove proposal (proposal type
     /// <see cref="MarmotMlsProposalTypes.SelfRemove"/>) for the calling member.
     /// </summary>
@@ -172,6 +191,20 @@ public sealed record CreateGroupResult(
 public sealed record AddMembersResult(
     byte[] CommitMlsMessageBytes,
     IReadOnlyList<WelcomeToSend> Welcomes,
+    byte[] NewExporterSecret);
+
+/// <summary>The output of a Remove+Commit (no Welcomes — nothing is being added).</summary>
+/// <param name="CommitMlsMessageBytes">Serialized MLSMessage to publish via a kind-445 group event so existing members process the removal.</param>
+/// <param name="NewExporterSecret">Exporter for the post-removal epoch.</param>
+public sealed record RemoveMembersResult(
+    byte[] CommitMlsMessageBytes,
+    byte[] NewExporterSecret);
+
+/// <summary>The output of a self-update Commit (local member rotates their leaf keys).</summary>
+/// <param name="CommitMlsMessageBytes">Serialized MLSMessage to publish via a kind-445 group event.</param>
+/// <param name="NewExporterSecret">Exporter for the post-update epoch.</param>
+public sealed record SelfUpdateResult(
+    byte[] CommitMlsMessageBytes,
     byte[] NewExporterSecret);
 
 /// <summary>A Welcome blob targeted at a specific recipient identity.</summary>
