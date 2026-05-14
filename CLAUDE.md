@@ -17,6 +17,12 @@ src/
   NostrNet.Relay/               ClientWebSocket-based RelayClient, RelayPool,
                                 Filter, RelayInformation (NIP-11), Nip05.
   NostrNet.Client/              NostrClient façade — RelayPool + optional key + helpers.
+  NostrNet.Blossom/             Blossom protocol — NIP-B7 user server list (kind
+                                10063) typed events + (future) HTTP client for
+                                upload / download / list / delete against
+                                Blossom servers. Extension methods on NostrClient
+                                live here (not in Client) so the core packages
+                                don't pull Blossom-specific code transitively.
   NostrNet.Marmot/              Marmot wire envelopes (kinds 30443/444/445),
                                 IMarmotMlsProvider interface, MarmotChat 1:1 + group
                                 helpers, NIP-59 wrap/unwrap of Welcomes. No MLS engine.
@@ -94,6 +100,7 @@ without either.
 | 92 | media attachments via imeta tag (shared parser/builder) | Core/Encoding/Imeta.cs |
 | 94 | file metadata events (kind 1063) | Core/Files/ |
 | B0 | web bookmarks (kind 39701, parameterized replaceable by URL) | Core/Bookmarks/ |
+| B7 | Blossom user server list (kind 10063) | **`NostrNet.Blossom`** package — `UserServers/` |
 
 **Deferred:** NIP-07/46 (signers), NIP-57 zaps. Mechanical once needed.
 

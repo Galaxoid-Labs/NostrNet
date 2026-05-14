@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NostrNet.Blossom</RootNamespace>
+    <AssemblyName>NostrNet.Blossom</AssemblyName>
+    <Description>Blossom protocol (https://github.com/hzrd149/blossom) — typed Nostr events (NIP-B7 kind-10063 user server list) plus HTTP client primitives for upload / download / list / delete against Blossom servers. Builds on NostrNet.Core for events and NostrNet.Client for relay publish/subscribe convenience.</Description>
+    <PackageTags>nostr;blossom;media;cdn;sha256;file-storage;nip-b7;bud</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NostrNet.Core\NostrNet.Core.csproj" />
+    <ProjectReference Include="..\NostrNet.Relay\NostrNet.Relay.csproj" />
+    <ProjectReference Include="..\NostrNet.Client\NostrNet.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NostrNet.Blossom.Tests" />
+  </ItemGroup>
+
+</Project>

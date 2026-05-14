@@ -85,6 +85,15 @@ public sealed class NostrClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// The currently-attached signing key, or <c>null</c> if the client
+    /// was built without one (read-only mode). Exposed so add-on
+    /// packages (e.g. <c>NostrNet.Blossom</c>) can reuse the same key
+    /// for protocol-specific event signing without round-tripping
+    /// through the client's helper methods.
+    /// </summary>
+    public PrivateKey? SigningKey => _key;
+
+    /// <summary>
     /// Detaches the current private key. Subsequent calls to signing- or
     /// decryption-dependent methods will throw. Existing subscriptions and
     /// publishes that captured the previous key continue unaffected.

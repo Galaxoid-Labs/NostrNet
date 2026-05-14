@@ -3,6 +3,7 @@
     <Project Path="samples/NostrNet.Sample.Console/NostrNet.Sample.Console.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/NostrNet.Blossom/NostrNet.Blossom.csproj" />
     <Project Path="src/NostrNet.Client/NostrNet.Client.csproj" />
     <Project Path="src/NostrNet.Core/NostrNet.Core.csproj" />
     <Project Path="src/NostrNet.Crypto/NostrNet.Crypto.csproj" />
@@ -11,6 +12,7 @@
     <Project Path="src/NostrNet.Relay/NostrNet.Relay.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/NostrNet.Blossom.Tests/NostrNet.Blossom.Tests.csproj" />
     <Project Path="tests/NostrNet.Core.Tests/NostrNet.Core.Tests.csproj" />
     <Project Path="tests/NostrNet.Crypto.Tests/NostrNet.Crypto.Tests.csproj" />
     <Project Path="tests/NostrNet.Marmot.Mls.Native.Tests/NostrNet.Marmot.Mls.Native.Tests.csproj" />
