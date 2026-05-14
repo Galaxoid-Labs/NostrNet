@@ -10,6 +10,15 @@
   <ItemGroup>
     <ProjectReference Include="..\NostrNet.Core\NostrNet.Core.csproj" />
     <ProjectReference Include="..\NostrNet.Crypto\NostrNet.Crypto.csproj" />
+    <!--
+      NostrMarmotClient needs the relay-facing types (Filter,
+      NostrClient). NostrNet.Client transitively gives us Relay too.
+      Marmot consumers who only want envelope helpers still get
+      relay code on their classpath; it's small and they're
+      virtually certain to need it anyway.
+    -->
+    <ProjectReference Include="..\NostrNet.Relay\NostrNet.Relay.csproj" />
+    <ProjectReference Include="..\NostrNet.Client\NostrNet.Client.csproj" />
   </ItemGroup>
 
   <ItemGroup>

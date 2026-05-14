@@ -487,3 +487,11 @@ local-nupkgs/
 # NostrNet.Marmot.Mls.Native — CI populates this; locally pop the host RID
 # in here to test the pack pipeline.
 src/NostrNet.Marmot.Mls.Native/prebuilt/
+
+# marmot-chat sample local state (SQLite + sidecars)
+/alice.db
+/alice.db-shm
+/alice.db-wal
+/bob.db
+/bob.db-shm
+/bob.db-wal

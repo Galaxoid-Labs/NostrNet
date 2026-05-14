@@ -1189,7 +1189,66 @@ dotnet run --project samples/NostrNet.Sample.Console -- vanity-hex dead --suffix
 
 # Marmot + OpenMLS: in-tree Alice/Bob 1:1 conversation smoke test
 dotnet run --project samples/NostrNet.Sample.Console -- marmot-mls-smoke
+
+# Marmot interactive REPL on real relays
+dotnet run --project samples/NostrNet.Sample.Console -- marmot-chat nsec1... [opts]
 ```
+
+### `marmot-chat` — interactive REPL over real relays
+
+`marmot-chat` drives a full Marmot conversation end-to-end through the
+high-level `NostrMarmotClient` façade. Run two instances (one per
+identity) and they'll discover each other via real relays.
+
+**Options:**
+
+| Flag | Meaning |
+|---|---|
+| `--state-path <file>` | SQLite path to persist MLS state across restarts (default: in-memory; lost on exit) |
+| `--peer <npub>` | Fetch the peer's KeyPackage and start a 1:1 immediately on launch |
+| `--relay <wss-uri>` | Add a relay (repeatable; default = the same 3 public relays as the other commands) |
+| `--auto-accept` | Auto-accept incoming invites instead of queueing them for `/accept` |
+
+**REPL commands:**
+
+| Command | Effect |
+|---|---|
+| `<text>` | Send `<text>` to the active conversation |
+| `/list` | List joined conversations (the active one is marked `*`) |
+| `/switch <N>` | Make conversation `#N` the active one for sends |
+| `/accept <N>` | Accept the Nth pending invite (skip with `--auto-accept`) |
+| `/start <npub>` | Fetch the peer's KeyPackage and start a 1:1 |
+| `/add <npub>` | Add a peer to the active conversation (publishes a Commit) |
+| `/rotate` | Rotate your MLS leaf keys in the active conversation |
+| `/help` | Print the REPL command list |
+| `/quit` | Exit |
+
+**Two-terminal demo (Alice ↔ Bob):**
+
+```sh
+# 1. Generate two identities (run twice, save outputs):
+dotnet run --project samples/NostrNet.Sample.Console -- gen
+
+# 2. Terminal A — Bob waits to be invited:
+dotnet run --project samples/NostrNet.Sample.Console -- \
+  marmot-chat <bob-nsec> --state-path bob.db --auto-accept
+
+# 3. Terminal B — Alice starts a 1:1 with Bob:
+dotnet run --project samples/NostrNet.Sample.Console -- \
+  marmot-chat <alice-nsec> --state-path alice.db --peer <bob-npub>
+```
+
+On launch each side publishes a KeyPackage and starts streaming
+inbound events. Alice's `--peer` flag fetches Bob's KeyPackage and
+publishes the NIP-59 Welcome; Bob's `--auto-accept` joins on receipt.
+After that, plain-text lines on either side are sent to the active
+conversation; the other terminal prints them as
+`[#<conv> npub1…] <text>`.
+
+State persisted via `--state-path` survives restarts (MLS epochs,
+ratchet state, signature keys — all stored in SQLite via the
+in-tree Rust FFI bridge to OpenMLS). Drop the flag for ephemeral
+in-memory state.
 
 ---
 

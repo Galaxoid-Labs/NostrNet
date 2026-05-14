@@ -23,6 +23,7 @@
 //   vanity-pow <bits>                    — generate a key with N leading-zero pubkey bits
 //   vanity-npub <pattern> [--suffix]     — generate a key whose npub matches a bech32 pattern
 //   vanity-hex  <pattern> [--suffix]     — generate a key whose pubkey hex matches a pattern
+//   marmot-chat <nsec> [opts]            — interactive Marmot REPL over real relays
 
 using NostrNet.Client;
 using NostrNet.Events;
@@ -59,6 +60,7 @@ try
         "vanity-npub" => await VanityAsync(args, npub: true),
         "vanity-hex" => await VanityAsync(args, npub: false),
         "marmot-mls-smoke" => await MarmotMlsSmokeAsync(),
+        "marmot-chat" => await MarmotChatAsync(args),
         _ => UnknownCommand(args[0]),
     };
 }
@@ -367,6 +369,21 @@ void PrintUsage()
     Console.Error.WriteLine("  vanity-npub <pattern> [--suffix]     mine a key whose npub matches a bech32 pattern");
     Console.Error.WriteLine("  vanity-hex  <pattern> [--suffix]     mine a key whose pubkey hex matches a pattern");
     Console.Error.WriteLine("  marmot-mls-smoke                     experimental: in-tree MLS two-member round-trip smoke test");
+    Console.Error.WriteLine("  marmot-chat <nsec> [opts]            interactive Marmot REPL on real relays");
+    Console.Error.WriteLine("    options:");
+    Console.Error.WriteLine("      --state-path <file>              SQLite path to persist MLS state (default: in-memory)");
+    Console.Error.WriteLine("      --peer <npub>                    fetch their KeyPackage and start a 1:1 immediately");
+    Console.Error.WriteLine("      --relay <wss-uri>                add a relay (repeatable; default = built-in 3 relays)");
+    Console.Error.WriteLine("      --auto-accept                    auto-accept incoming invites (default: prompt)");
+    Console.Error.WriteLine("    REPL commands:");
+    Console.Error.WriteLine("      <text>                send <text> to the active conversation");
+    Console.Error.WriteLine("      /list                 list joined conversations");
+    Console.Error.WriteLine("      /switch <N>           make conversation #N active for plain-text sends");
+    Console.Error.WriteLine("      /accept <N>           accept the Nth pending invite");
+    Console.Error.WriteLine("      /start <npub>         fetch peer's KeyPackage and start a 1:1");
+    Console.Error.WriteLine("      /add <npub>           add a peer to the active conversation");
+    Console.Error.WriteLine("      /rotate               rotate your MLS leaf keys in the active conversation");
+    Console.Error.WriteLine("      /quit                 exit");
 }
 
 // Drives the full Marmot + OpenMLS 1:1 chat flow end-to-end without
@@ -412,4 +429,449 @@ async Task<int> MarmotMlsSmokeAsync()
     bool ok = gotByBob == "hello bob" && gotByAlice == "hi alice";
     Console.WriteLine(ok ? "✓ 1:1 marmot round-trip OK" : "✗ 1:1 marmot round-trip FAILED");
     return ok ? 0 : 1;
+}
+
+// Interactive REPL over the high-level NostrMarmotClient. Connects to
+// the configured relays, publishes a fresh KeyPackage, and pumps
+// MarmotInboundEvent → stdout while reading slash-commands and
+// plaintext lines from stdin.
+async Task<int> MarmotChatAsync(string[] argv)
+{
+    if (argv.Length < 2)
+    {
+        Console.Error.WriteLine("usage: marmot-chat <nsec> [--state-path <file>] [--peer <npub>] [--relay <wss>...] [--auto-accept]");
+        return 64;
+    }
+
+    using var key = PrivateKey.FromNsec(argv[1]);
+
+    string? statePath = null;
+    PublicKey? initialPeer = null;
+    bool autoAccept = false;
+    var relays = new List<string>();
+    for (int i = 2; i < argv.Length; i++)
+    {
+        switch (argv[i])
+        {
+            case "--state-path" when i + 1 < argv.Length:
+                statePath = argv[++i];
+                break;
+            case "--peer" when i + 1 < argv.Length:
+                initialPeer = PublicKey.FromNpub(argv[++i]);
+                break;
+            case "--relay" when i + 1 < argv.Length:
+                relays.Add(argv[++i]);
+                break;
+            case "--auto-accept":
+                autoAccept = true;
+                break;
+            default:
+                Console.Error.WriteLine($"unknown option: {argv[i]}");
+                return 64;
+        }
+    }
+
+    if (relays.Count == 0)
+    {
+        relays.AddRange(DefaultRelays);
+    }
+
+    var provider = statePath is null
+        ? new OpenMlsProvider()
+        : OpenMlsProvider.OpenAtPath(statePath);
+
+    Console.WriteLine($"identity: {key.PublicKey.ToNpub()}");
+    Console.WriteLine($"relays:   {string.Join(", ", relays)}");
+    Console.WriteLine($"state:    {(statePath ?? "in-memory")}");
+
+    NostrMarmotClient client;
+    try
+    {
+        client = await NostrMarmotClient.Builder(key, provider)
+            .UseRelays(relays.ToArray())
+            .ConnectAsync()
+            .ConfigureAwait(false);
+    }
+    catch
+    {
+        provider.Dispose();
+        throw;
+    }
+
+    await using (client)
+    {
+        var kpEvent = await client.PublishKeyPackageAsync().ConfigureAwait(false);
+        Console.WriteLine($"published KeyPackage {kpEvent.Id.ToHex()[..16]}…");
+
+        // Mutable state shared between the reader and inbound pump.
+        var conversations = new List<MarmotConversation>();
+        var pendingInvites = new List<MarmotInviteReceived>();
+        int active = -1;
+        var stateLock = new object();
+
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) => { cts.Cancel(); e.Cancel = true; };
+
+        if (initialPeer is { } peer)
+        {
+            Console.WriteLine($"fetching KeyPackage for {peer.ToNpub()}...");
+            var kp = await client.TryGetKeyPackageAsync(peer, TimeSpan.FromSeconds(10), cts.Token).ConfigureAwait(false);
+            if (kp is null)
+            {
+                Console.Error.WriteLine("  no KeyPackage found within 10s — the peer may not have published one yet.");
+            }
+            else
+            {
+                var convo = await client.StartConversationAsync(kp, conversationName: null, ct: cts.Token).ConfigureAwait(false);
+                lock (stateLock)
+                {
+                    conversations.Add(convo);
+                    active = conversations.Count - 1;
+                }
+                Console.WriteLine($"started conversation #{active} with {peer.ToNpub()[..16]}…");
+            }
+        }
+
+        // Pump inbound events to stdout.
+        var pump = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var ev in client.SubscribeAsync(cts.Token))
+                {
+                    switch (ev)
+                    {
+                        case MarmotInviteReceived invite:
+                            if (autoAccept)
+                            {
+                                try
+                                {
+                                    var convo = await client.AcceptInviteAsync(invite, cts.Token).ConfigureAwait(false);
+                                    int n;
+                                    lock (stateLock)
+                                    {
+                                        conversations.Add(convo);
+                                        n = conversations.Count - 1;
+                                        if (active < 0) active = n;
+                                    }
+                                    Console.WriteLine($"\n[invite] auto-accepted from {invite.Sender.ToNpub()[..16]}… → conversation #{n}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.Error.WriteLine($"\n[invite] auto-accept failed: {ex.Message}");
+                                }
+                            }
+                            else
+                            {
+                                int idx;
+                                lock (stateLock)
+                                {
+                                    pendingInvites.Add(invite);
+                                    idx = pendingInvites.Count - 1;
+                                }
+                                Console.WriteLine($"\n[invite] #{idx} from {invite.Sender.ToNpub()[..16]}… — type /accept {idx} to join");
+                            }
+                            break;
+
+                        case MarmotMessageReceived msg:
+                            string from = msg.Sender?.ToNpub()[..16] ?? "<unknown>";
+                            int cidx = IndexOf(conversations, msg.Conversation, stateLock);
+                            Console.WriteLine($"\n[#{cidx} {from}…] {msg.Plaintext}");
+                            break;
+
+                        case MarmotGroupStateChanged gsc:
+                            string by = gsc.Sender?.ToNpub()[..16] ?? "<unknown>";
+                            int gidx = IndexOf(conversations, gsc.Conversation, stateLock);
+                            Console.WriteLine($"\n[#{gidx}] group state changed by {by}…");
+                            break;
+                    }
+
+                    Console.Write("> ");
+                }
+            }
+            catch (OperationCanceledException) { /* shutdown */ }
+        });
+
+        Console.WriteLine("REPL ready. Type /help for commands, /quit to exit.");
+        Console.Write("> ");
+
+        while (!cts.IsCancellationRequested)
+        {
+            string? line = await Task.Run(Console.In.ReadLineAsync).ConfigureAwait(false);
+            if (line is null)
+            {
+                break;
+            }
+
+            line = line.Trim();
+            if (line.Length == 0)
+            {
+                Console.Write("> ");
+                continue;
+            }
+
+            if (line == "/quit")
+            {
+                break;
+            }
+
+            if (line == "/help")
+            {
+                Console.WriteLine("  <text>             send to active conversation");
+                Console.WriteLine("  /list              list conversations");
+                Console.WriteLine("  /switch <N>        make #N the active conversation");
+                Console.WriteLine("  /accept <N>        accept invite #N");
+                Console.WriteLine("  /start <npub>      start a 1:1");
+                Console.WriteLine("  /add <npub>        add a peer to the active conversation");
+                Console.WriteLine("  /rotate            self-update MLS keys in active conversation");
+                Console.WriteLine("  /quit              exit");
+                Console.Write("> ");
+                continue;
+            }
+
+            if (line == "/list")
+            {
+                lock (stateLock)
+                {
+                    for (int i = 0; i < conversations.Count; i++)
+                    {
+                        string marker = i == active ? "*" : " ";
+                        string gid = Convert.ToHexStringLower(conversations[i].NostrGroupId)[..16];
+                        Console.WriteLine($"  {marker} #{i}  group {gid}…");
+                    }
+
+                    if (conversations.Count == 0)
+                    {
+                        Console.WriteLine("  (none)");
+                    }
+                }
+
+                Console.Write("> ");
+                continue;
+            }
+
+            if (line.StartsWith("/switch ", StringComparison.Ordinal) &&
+                int.TryParse(line[8..].Trim(), out int sIdx))
+            {
+                lock (stateLock)
+                {
+                    if (sIdx < 0 || sIdx >= conversations.Count)
+                    {
+                        Console.WriteLine($"  no conversation #{sIdx}");
+                    }
+                    else
+                    {
+                        active = sIdx;
+                        Console.WriteLine($"  active = #{active}");
+                    }
+                }
+
+                Console.Write("> ");
+                continue;
+            }
+
+            if (line.StartsWith("/accept ", StringComparison.Ordinal) &&
+                int.TryParse(line[8..].Trim(), out int aIdx))
+            {
+                MarmotInviteReceived? invite = null;
+                lock (stateLock)
+                {
+                    if (aIdx >= 0 && aIdx < pendingInvites.Count)
+                    {
+                        invite = pendingInvites[aIdx];
+                    }
+                }
+
+                if (invite is null)
+                {
+                    Console.WriteLine($"  no pending invite #{aIdx}");
+                }
+                else
+                {
+                    try
+                    {
+                        var convo = await client.AcceptInviteAsync(invite, cts.Token).ConfigureAwait(false);
+                        int n;
+                        lock (stateLock)
+                        {
+                            conversations.Add(convo);
+                            n = conversations.Count - 1;
+                            if (active < 0) active = n;
+                        }
+                        Console.WriteLine($"  joined as conversation #{n}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"  accept failed: {ex.Message}");
+                    }
+                }
+
+                Console.Write("> ");
+                continue;
+            }
+
+            if (line.StartsWith("/start ", StringComparison.Ordinal))
+            {
+                try
+                {
+                    var peerKey = PublicKey.FromNpub(line[7..].Trim());
+                    var kp = await client.TryGetKeyPackageAsync(peerKey, TimeSpan.FromSeconds(10), cts.Token).ConfigureAwait(false);
+                    if (kp is null)
+                    {
+                        Console.WriteLine("  no KeyPackage found.");
+                    }
+                    else
+                    {
+                        var convo = await client.StartConversationAsync(kp, conversationName: null, ct: cts.Token).ConfigureAwait(false);
+                        int n;
+                        lock (stateLock)
+                        {
+                            conversations.Add(convo);
+                            n = conversations.Count - 1;
+                            active = n;
+                        }
+                        Console.WriteLine($"  started conversation #{n}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"  start failed: {ex.Message}");
+                }
+
+                Console.Write("> ");
+                continue;
+            }
+
+            if (line.StartsWith("/add ", StringComparison.Ordinal))
+            {
+                MarmotConversation? convo = null;
+                lock (stateLock)
+                {
+                    if (active >= 0 && active < conversations.Count)
+                    {
+                        convo = conversations[active];
+                    }
+                }
+
+                if (convo is null)
+                {
+                    Console.WriteLine("  no active conversation.");
+                }
+                else
+                {
+                    try
+                    {
+                        var peerKey = PublicKey.FromNpub(line[5..].Trim());
+                        var kp = await client.TryGetKeyPackageAsync(peerKey, TimeSpan.FromSeconds(10), cts.Token).ConfigureAwait(false);
+                        if (kp is null)
+                        {
+                            Console.WriteLine("  no KeyPackage found.");
+                        }
+                        else
+                        {
+                            await client.AddPeerAsync(convo, kp, cts.Token).ConfigureAwait(false);
+                            Console.WriteLine("  add committed.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"  add failed: {ex.Message}");
+                    }
+                }
+
+                Console.Write("> ");
+                continue;
+            }
+
+            if (line == "/rotate")
+            {
+                MarmotConversation? convo = null;
+                lock (stateLock)
+                {
+                    if (active >= 0 && active < conversations.Count)
+                    {
+                        convo = conversations[active];
+                    }
+                }
+
+                if (convo is null)
+                {
+                    Console.WriteLine("  no active conversation.");
+                }
+                else
+                {
+                    try
+                    {
+                        await client.RotateKeysAsync(convo, cts.Token).ConfigureAwait(false);
+                        Console.WriteLine("  rotated.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"  rotate failed: {ex.Message}");
+                    }
+                }
+
+                Console.Write("> ");
+                continue;
+            }
+
+            // Plain-text send to active conversation.
+            MarmotConversation? sendTo = null;
+            lock (stateLock)
+            {
+                if (active >= 0 && active < conversations.Count)
+                {
+                    sendTo = conversations[active];
+                }
+            }
+
+            if (sendTo is null)
+            {
+                Console.WriteLine("  no active conversation — use /start <npub> or /accept <N> first.");
+            }
+            else
+            {
+                try
+                {
+                    await client.SendAsync(sendTo, line, cts.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"  send failed: {ex.Message}");
+                }
+            }
+
+            Console.Write("> ");
+        }
+
+        cts.Cancel();
+        try
+        {
+            await pump.ConfigureAwait(false);
+        }
+        catch
+        {
+            // pump errors during shutdown are non-fatal
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("bye.");
+    return 0;
+
+    static int IndexOf(List<MarmotConversation> list, MarmotConversation convo, object @lock)
+    {
+        lock (@lock)
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i].NostrGroupId.AsSpan().SequenceEqual(convo.NostrGroupId.AsSpan()))
+                {
+                    return i;
+                }
+            }
+        }
+
+        return -1;
+    }
 }
