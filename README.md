@@ -46,7 +46,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [92](https://github.com/nostr-protocol/nips/blob/master/92.md) | Media attachments via `imeta` tag (shared parser/builder) |
 | [94](https://github.com/nostr-protocol/nips/blob/master/94.md) | File metadata events (kind 1063) |
 | [B0](https://github.com/nostr-protocol/nips/blob/master/B0.md) | Web bookmarks (kind 39701; parameterized-replaceable by URL) |
-| [B7](https://github.com/nostr-protocol/nips/blob/master/B7.md) | Blossom user server list (kind 10063) — separate `NostrNet.Blossom` package |
+| [B7](https://github.com/nostr-protocol/nips/blob/master/B7.md) | Blossom user server list (kind 10063) + full [BUD-00…12](https://github.com/hzrd149/blossom) client (HTTP, auth, mirror, media, list, delete, payment, reports, URI scheme) — separate `NostrNet.Blossom` package |
 
 ### Marmot (MLS over Nostr)
 

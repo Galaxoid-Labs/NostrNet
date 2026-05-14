@@ -101,6 +101,7 @@ without either.
 | 94 | file metadata events (kind 1063) | Core/Files/ |
 | B0 | web bookmarks (kind 39701, parameterized replaceable by URL) | Core/Bookmarks/ |
 | B7 | Blossom user server list (kind 10063) | **`NostrNet.Blossom`** package — `UserServers/` |
+| Blossom BUDs 00–12 | HTTP client + auth events + URI scheme | `NostrNet.Blossom/{Blobs,Auth,Client}/` |
 
 **Deferred:** NIP-07/46 (signers), NIP-57 zaps. Mechanical once needed.
 
