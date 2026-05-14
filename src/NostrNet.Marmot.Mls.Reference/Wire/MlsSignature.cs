@@ -15,7 +15,7 @@ using TlsWriter = NostrNet.Marmot.Encoding.TlsWriter;
 namespace NostrNet.Marmot.Mls.Reference.Wire;
 
 /// <summary>MLS labeled-signature helpers (RFC 9420 §5.1.2).</summary>
-public static class MlsSignature
+internal static class MlsSignature
 {
     private const string LabelPrefix = "MLS 1.0 ";
 

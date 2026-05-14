@@ -26,7 +26,7 @@ namespace NostrNet.Marmot.Mls.Reference.Wire;
 /// </summary>
 /// <param name="JoinerSecret">The joiner_secret — primary input to the new member's key schedule.</param>
 /// <param name="PathSecret">Optional path secret. Always <c>null</c> in the reference provider.</param>
-public sealed record GroupSecrets(byte[] JoinerSecret, byte[]? PathSecret = null)
+internal sealed record GroupSecrets(byte[] JoinerSecret, byte[]? PathSecret = null)
 {
     /// <summary>Serializes the GroupSecrets to TLS bytes.</summary>
     public byte[] Encode()

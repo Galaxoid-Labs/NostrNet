@@ -21,7 +21,7 @@ using TlsWriter = NostrNet.Marmot.Encoding.TlsWriter;
 namespace NostrNet.Marmot.Mls.Reference.Wire;
 
 /// <summary>The MLS GroupInfo carried inside a Welcome's <c>encrypted_group_info</c> field.</summary>
-public sealed record GroupInfo
+internal sealed record GroupInfo
 {
     /// <summary>Group context for the epoch being joined.</summary>
     public required GroupContext GroupContext { get; init; }

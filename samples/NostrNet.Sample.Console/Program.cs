@@ -27,6 +27,9 @@
 using NostrNet.Client;
 using NostrNet.Events;
 using NostrNet.Keys;
+using NostrNet.Marmot.Events;
+using NostrNet.Marmot.GroupData;
+using NostrNet.Marmot.Mls.Reference;
 using NostrNet.Relay;
 
 string[] DefaultRelays =
@@ -56,6 +59,7 @@ try
         "vanity-pow" => await VanityPowAsync(args),
         "vanity-npub" => await VanityAsync(args, npub: true),
         "vanity-hex" => await VanityAsync(args, npub: false),
+        "marmot-mls-smoke" => await MarmotMlsSmokeAsync(),
         _ => UnknownCommand(args[0]),
     };
 }
@@ -363,4 +367,76 @@ void PrintUsage()
     Console.Error.WriteLine("  vanity-pow  <bits>                   mine a key with N leading-zero pubkey bits");
     Console.Error.WriteLine("  vanity-npub <pattern> [--suffix]     mine a key whose npub matches a bech32 pattern");
     Console.Error.WriteLine("  vanity-hex  <pattern> [--suffix]     mine a key whose pubkey hex matches a pattern");
+    Console.Error.WriteLine("  marmot-mls-smoke                     experimental: in-tree MLS two-member round-trip smoke test");
+}
+
+// Drives the full Marmot + reference-MLS flow end-to-end without touching
+// the network. Useful both as a demo and as the AOT-publish smoke test
+// for the BouncyCastle-backed MLS reference provider.
+async Task<int> MarmotMlsSmokeAsync()
+{
+    using var aliceKey = PrivateKey.Generate();
+    using var bobKey = PrivateKey.Generate();
+
+    var aliceProvider = new ReferenceMarmotMlsProvider();
+    var bobProvider = new ReferenceMarmotMlsProvider();
+
+    // Bob: build a KeyPackage and self-publish it as a kind-30443 event.
+    var bobBundle = await bobProvider.BuildKeyPackageAsync(
+        identityPubkey: bobKey.PublicKey,
+        ciphersuite: 0x0001,
+        extensions: new ushort[] { 0xF2EE },
+        proposals: Array.Empty<ushort>());
+
+    var bobKpEvent = KeyPackageEvent.Create("smoke-slot")
+        .WithBundleBytes(bobBundle.BundleBytes)
+        .WithCiphersuite(bobBundle.Ciphersuite)
+        .WithExtension(0xF2EE)
+        .WithKeyPackageRef(bobBundle.KeyPackageRef!)
+        .WithRelay("wss://relay.example")
+        .Sign(bobKey);
+
+    // Alice: create group, add Bob, get Welcome.
+    byte[] groupId = new byte[32];
+    System.Security.Cryptography.RandomNumberGenerator.Fill(groupId);
+    var groupData = new MarmotGroupDataExtension
+    {
+        NostrGroupId = groupId,
+        Name = "Smoke Test",
+        AdminPubkeys = new[] { aliceKey.PublicKey },
+        Relays = new[] { "wss://relay.example" },
+    };
+    await aliceProvider.CreateGroupAsync(aliceKey.PublicKey, groupData, ciphersuite: 0x0001);
+    var addResult = await aliceProvider.AddMembersAsync(
+        groupId,
+        new ReadOnlyMemory<byte>[] { bobBundle.BundleBytes });
+
+    // Alice: wrap Welcome in NIP-59 gift wrap and "send" to Bob.
+    var giftWrap = WelcomeEvent.Build(
+        mlsWelcomeBytes: addResult.Welcomes[0].WelcomeMlsMessageBytes,
+        keyPackageEventId: bobKpEvent.Id.ToHex(),
+        senderKey: aliceKey,
+        recipientPubkey: bobKey.PublicKey,
+        recommendedRelays: groupData.Relays.ToList());
+
+    // Bob: unwrap and join.
+    var unwrapped = WelcomeEvent.Unwrap(giftWrap, bobKey);
+    await bobProvider.JoinGroupFromWelcomeAsync(unwrapped.MlsWelcomeBytes);
+
+    byte[] aliceExp = await aliceProvider.CurrentExporterSecretAsync(groupId);
+    byte[] bobExp = await bobProvider.CurrentExporterSecretAsync(groupId);
+
+    bool match = aliceExp.AsSpan().SequenceEqual(bobExp);
+    Console.WriteLine($"alice exporter: {Convert.ToHexString(aliceExp).ToLowerInvariant()}");
+    Console.WriteLine($"bob   exporter: {Convert.ToHexString(bobExp).ToLowerInvariant()}");
+    Console.WriteLine(match ? "✓ exporter secrets match — group works" : "✗ exporter mismatch");
+
+    // Round-trip a kind-445 GroupEvent.
+    byte[] message = System.Text.Encoding.UTF8.GetBytes("hello from the AOT smoke test");
+    var groupEvent = GroupEvent.Build(message, aliceExp, groupId);
+    var decrypted = GroupEvent.Decrypt(groupEvent, bobExp);
+    bool roundTrip = decrypted.MlsMessageBytes.AsSpan().SequenceEqual(message);
+    Console.WriteLine(roundTrip ? "✓ kind-445 GroupEvent round-trip OK" : "✗ kind-445 GroupEvent round-trip FAILED");
+
+    return match && roundTrip ? 0 : 1;
 }

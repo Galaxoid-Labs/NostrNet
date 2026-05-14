@@ -26,7 +26,7 @@ using TlsWriter = NostrNet.Marmot.Encoding.TlsWriter;
 namespace NostrNet.Marmot.Mls.Reference.Wire;
 
 /// <summary>Tree-hash helpers for a 2-leaf MLS ratchet tree.</summary>
-public static class TreeHash
+internal static class TreeHash
 {
     private const byte NodeTypeLeaf = 1;
     private const byte NodeTypeParent = 2;

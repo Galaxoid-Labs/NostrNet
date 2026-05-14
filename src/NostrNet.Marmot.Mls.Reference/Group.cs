@@ -31,7 +31,7 @@ namespace NostrNet.Marmot.Mls.Reference;
 /// Reference-provider MLS group state. Holds enough state to compute
 /// the current epoch's exporter secret and to add one more member.
 /// </summary>
-public sealed class ReferenceMlsGroup
+internal sealed class ReferenceMlsGroup
 {
     /// <summary>Custom (private-use) extension type for the founder's leaf inside GroupInfo.</summary>
     public const ushort FounderLeafExtensionType = 0xFE01;

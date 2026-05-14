@@ -23,7 +23,7 @@ using TlsWriter = NostrNet.Marmot.Encoding.TlsWriter;
 namespace NostrNet.Marmot.Mls.Reference.Wire;
 
 /// <summary>The MLS GroupContext: per-epoch group state mixed into the key schedule.</summary>
-public sealed record GroupContext
+internal sealed record GroupContext
 {
     /// <summary>Protocol version.</summary>
     public required ProtocolVersion Version { get; init; }

@@ -9,7 +9,7 @@ using Org.BouncyCastle.Crypto.Parameters;
 namespace NostrNet.Marmot.Mls.Reference.Crypto;
 
 /// <summary>X25519 keypair generation and Diffie-Hellman. RFC 7748.</summary>
-public static class X25519
+internal static class X25519
 {
     /// <summary>Length of an X25519 public key in bytes.</summary>
     public const int PublicKeyLength = CiphersuiteInfo.Npk;

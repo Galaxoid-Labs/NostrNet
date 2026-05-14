@@ -38,8 +38,22 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
 | [B0](https://github.com/nostr-protocol/nips/blob/master/B0.md) | Web bookmarks (kind 39701; parameterized-replaceable by URL) |
 
+### Marmot (MLS over Nostr)
+
+[Marmot](https://github.com/marmot-protocol/marmot) support is split into
+an envelope-only package and a pluggable MLS provider. See
+[`src/NostrNet.Marmot/README.md`](src/NostrNet.Marmot/README.md) for the
+full design.
+
+| MIP | Feature |
+|----|---------|
+| 00 | KeyPackage publication (kind 30443) |
+| 01 | Marmot Group Data extension (0xF2EE) |
+| 02 | Welcome event (kind 444 wrapped in NIP-59 gift wrap) |
+| 03 | Group event content encryption (kind 445, keyed off MLS exporter) |
+
 Tested against the official BIP-340, BIP-173, RFC 8439, NIP-44, and Galaxoid
-Labs Swift Nostr interop vectors — **380+ tests, zero warnings.**
+Labs Swift Nostr interop vectors — **490+ tests, zero warnings.**
 
 ## Install
 
@@ -210,12 +224,15 @@ dotnet test
 | Package | Responsibility |
 |---------|---------------|
 | `NostrNet.Core`   | Keys, events, canonical serialization, NIP-19 bech32, `Profile`, internal secp256k1 wrapper |
-| `NostrNet.Crypto` | ChaCha20, NIP-44 v2, NIP-17/59 gift wrap, NIP-51 lists |
+| `NostrNet.Crypto` | ChaCha20, NIP-44 v2, NIP-17 DMs, NIP-59 gift wrap, NIP-51 lists |
 | `NostrNet.Relay`  | WebSocket client, `RelayPool`, `Filter`, NIP-11 fetch, NIP-05 verify |
 | `NostrNet.Client` | High-level `NostrClient` façade |
+| `NostrNet.Marmot` | Marmot (MLS-over-Nostr) envelope: kind 30443 / 444 / 445, `IMarmotMlsProvider`, NIP-59 wrap of Welcomes |
+| `NostrNet.Marmot.Mls.Reference` | **Experimental** in-tree MLS provider (`NMARMOT0001`); single ciphersuite, two-member groups |
 
 For most apps, reference only `NostrNet.Client` — it pulls in everything you
-need transitively.
+need transitively. Marmot lives in separate packages so callers who don't
+want MLS aren't forced to take the dependency.
 
 ---
 
@@ -1094,6 +1111,9 @@ dotnet run --project samples/NostrNet.Sample.Console -- vanity-npub alce
 
 # Vanity: pubkey hex ending with "dead"
 dotnet run --project samples/NostrNet.Sample.Console -- vanity-hex dead --suffix
+
+# Marmot + experimental MLS reference: in-tree Alice/Bob two-member smoke test
+dotnet run --project samples/NostrNet.Sample.Console -- marmot-mls-smoke
 ```
 
 ---

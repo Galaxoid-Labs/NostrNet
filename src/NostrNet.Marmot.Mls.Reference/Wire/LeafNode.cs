@@ -19,7 +19,7 @@ namespace NostrNet.Marmot.Mls.Reference.Wire;
 /// A leaf in the MLS ratchet tree. Carries the member's encryption /
 /// signature keys, credential, capabilities, and signed metadata.
 /// </summary>
-public sealed record LeafNode
+internal sealed record LeafNode
 {
     /// <summary>X25519 HPKE public key used to receive direct messages in the tree.</summary>
     public required byte[] EncryptionKey { get; init; }

@@ -24,7 +24,7 @@ using SysEncoding = System.Text.Encoding;
 namespace NostrNet.Marmot.Mls.Reference.Crypto;
 
 /// <summary>HPKE (RFC 9180) base-mode primitives for ciphersuite 0x0001.</summary>
-public static class Hpke
+internal static class Hpke
 {
     // ─────────────────────────────────────────────────────────────
     // Constants.

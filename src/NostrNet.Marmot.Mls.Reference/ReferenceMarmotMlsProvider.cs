@@ -30,6 +30,9 @@ namespace NostrNet.Marmot.Mls.Reference;
 /// In-tree, single-ciphersuite, group-of-2 MLS provider for Marmot.
 /// EXPERIMENTAL — see <see cref="ExperimentalDiagnostics"/>.
 /// </summary>
+[System.Diagnostics.CodeAnalysis.Experimental(
+    ExperimentalDiagnostics.DiagnosticId,
+    UrlFormat = "https://github.com/Galaxoid-Labs/NostrNet/blob/main/src/NostrNet.Marmot.Mls.Reference/README.md")]
 public sealed class ReferenceMarmotMlsProvider : IMarmotMlsProvider
 {
     private readonly Dictionary<string, ReferenceMlsGroup> _groups = new(StringComparer.Ordinal);

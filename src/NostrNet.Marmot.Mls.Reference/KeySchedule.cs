@@ -36,7 +36,7 @@ namespace NostrNet.Marmot.Mls.Reference;
 /// The derived secrets for one MLS epoch — everything that can be
 /// derived from <c>epoch_secret</c> plus the welcome-leg secrets.
 /// </summary>
-public sealed record EpochSecrets
+internal sealed record EpochSecrets
 {
     /// <summary>The joiner_secret. Distributed via Welcome to new members.</summary>
     public required byte[] JoinerSecret { get; init; }
@@ -64,7 +64,7 @@ public sealed record EpochSecrets
 }
 
 /// <summary>MLS key-schedule derivation primitives (RFC 9420 §8.6, §9).</summary>
-public static class KeySchedule
+internal static class KeySchedule
 {
     /// <summary>The "marmot" / "group-event" labeled exporter Marmot uses for kind-445.</summary>
     public const string MarmotExporterLabel = "marmot";

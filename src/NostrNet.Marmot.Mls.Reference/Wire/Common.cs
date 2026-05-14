@@ -12,14 +12,14 @@ using TlsWriter = NostrNet.Marmot.Encoding.TlsWriter;
 namespace NostrNet.Marmot.Mls.Reference.Wire;
 
 /// <summary>MLS protocol version per RFC 9420 §6. Only <see cref="Mls10"/> is supported.</summary>
-public enum ProtocolVersion : ushort
+internal enum ProtocolVersion : ushort
 {
     /// <summary>MLS 1.0 (the only version defined).</summary>
     Mls10 = 0x0001,
 }
 
 /// <summary>MLS credential type per RFC 9420 §5.3.</summary>
-public enum CredentialType : ushort
+internal enum CredentialType : ushort
 {
     /// <summary>Reserved.</summary>
     Reserved = 0x0000,
@@ -32,7 +32,7 @@ public enum CredentialType : ushort
 }
 
 /// <summary>LeafNode origin per RFC 9420 §7.2 §"leaf_node_source".</summary>
-public enum LeafNodeSource : byte
+internal enum LeafNodeSource : byte
 {
     /// <summary>Leaf came from a KeyPackage (initial join).</summary>
     KeyPackage = 1,
@@ -47,7 +47,7 @@ public enum LeafNodeSource : byte
 /// <summary>A single MLS extension. RFC 9420 §6.5.</summary>
 /// <param name="ExtensionType">IANA-assigned extension type.</param>
 /// <param name="Data">Raw extension data (opaque to the framing layer).</param>
-public sealed record Extension(ushort ExtensionType, byte[] Data)
+internal sealed record Extension(ushort ExtensionType, byte[] Data)
 {
     /// <summary>Writes a single Extension to <paramref name="w"/>.</summary>
     public void Write(ref TlsWriter w)
@@ -98,7 +98,7 @@ public sealed record Extension(ushort ExtensionType, byte[] Data)
 /// <summary>Lifetime bounds carried in a KeyPackage-origin LeafNode. RFC 9420 §7.2.</summary>
 /// <param name="NotBefore">Unix seconds, inclusive.</param>
 /// <param name="NotAfter">Unix seconds, inclusive.</param>
-public sealed record Lifetime(ulong NotBefore, ulong NotAfter)
+internal sealed record Lifetime(ulong NotBefore, ulong NotAfter)
 {
     /// <summary>Writes to a TLS stream.</summary>
     public void Write(ref TlsWriter w)
@@ -118,7 +118,7 @@ public sealed record Lifetime(ulong NotBefore, ulong NotAfter)
 /// <param name="ExtensionTypes">Extension types this node understands.</param>
 /// <param name="ProposalTypes">Proposal types this node understands.</param>
 /// <param name="CredentialTypes">Credential types this node understands.</param>
-public sealed record Capabilities(
+internal sealed record Capabilities(
     IReadOnlyList<ushort> Versions,
     IReadOnlyList<ushort> CipherSuites,
     IReadOnlyList<ushort> ExtensionTypes,
@@ -175,7 +175,7 @@ public sealed record Capabilities(
 /// <summary>HPKE-encrypted ciphertext per RFC 9420 §6.1.</summary>
 /// <param name="KemOutput">The HPKE <c>enc</c> (encapsulated ephemeral public key).</param>
 /// <param name="Ciphertext">The AEAD ciphertext with the tag appended.</param>
-public sealed record HpkeCiphertext(byte[] KemOutput, byte[] Ciphertext)
+internal sealed record HpkeCiphertext(byte[] KemOutput, byte[] Ciphertext)
 {
     /// <summary>Writes to a TLS stream.</summary>
     public void Write(ref TlsWriter w)

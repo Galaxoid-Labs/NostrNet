@@ -25,7 +25,7 @@ namespace NostrNet.Marmot.Mls.Reference.Wire;
 /// <summary>One per-recipient encrypted-group-secrets entry inside a Welcome.</summary>
 /// <param name="NewMember">32-byte KeyPackageRef identifying the recipient.</param>
 /// <param name="EncryptedSecrets">HPKE-encrypted GroupSecrets payload.</param>
-public sealed record EncryptedGroupSecrets(byte[] NewMember, HpkeCiphertext EncryptedSecrets)
+internal sealed record EncryptedGroupSecrets(byte[] NewMember, HpkeCiphertext EncryptedSecrets)
 {
     /// <summary>Writes to a TLS stream.</summary>
     public void Write(ref TlsWriter w)
@@ -49,7 +49,7 @@ public sealed record EncryptedGroupSecrets(byte[] NewMember, HpkeCiphertext Encr
 }
 
 /// <summary>The MLS Welcome message — the bytes that get base64-encoded into a Marmot kind-444 rumor.</summary>
-public sealed record Welcome
+internal sealed record Welcome
 {
     /// <summary>Ciphersuite identifier.</summary>
     public required Ciphersuite Ciphersuite { get; init; }

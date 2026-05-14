@@ -23,7 +23,7 @@ using TlsWriter = NostrNet.Marmot.Encoding.TlsWriter;
 namespace NostrNet.Marmot.Mls.Reference.Wire;
 
 /// <summary>An MLS KeyPackage: a self-signed key bundle published by a prospective member.</summary>
-public sealed record KeyPackage
+internal sealed record KeyPackage
 {
     /// <summary>Protocol version (MLS 1.0 only).</summary>
     public required ProtocolVersion Version { get; init; }

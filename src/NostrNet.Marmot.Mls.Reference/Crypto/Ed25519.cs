@@ -10,7 +10,7 @@ using Org.BouncyCastle.Crypto.Signers;
 namespace NostrNet.Marmot.Mls.Reference.Crypto;
 
 /// <summary>Ed25519 sign / verify primitives. RFC 8032 PureEdDSA, 32-byte seeds.</summary>
-public static class Ed25519
+internal static class Ed25519
 {
     /// <summary>Length of the public key in bytes.</summary>
     public const int PublicKeyLength = CiphersuiteInfo.SignaturePublicKeyLength;

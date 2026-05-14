@@ -79,3 +79,10 @@ jobs:
           --configuration Release
           --runtime linux-x64
           -p:PublishAot=true
+
+      # Runtime smoke test of the AOT-compiled binary. Exercises the
+      # experimental NostrNet.Marmot.Mls.Reference path (BouncyCastle
+      # Ed25519/X25519, AES-GCM, HKDF, MLS key schedule). Failure at
+      # runtime catches issues the analyzers can't predict.
+      - name: Run MLS smoke test (AOT binary)
+        run: ./samples/NostrNet.Sample.Console/bin/Release/net10.0/linux-x64/publish/NostrNet.Sample.Console marmot-mls-smoke

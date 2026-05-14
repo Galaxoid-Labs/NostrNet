@@ -22,7 +22,7 @@ namespace NostrNet.Marmot.Mls.Reference.Crypto;
 /// supported by the reference provider; the enum is open-ended so future
 /// providers can share the same id space.
 /// </summary>
-public enum Ciphersuite : ushort
+internal enum Ciphersuite : ushort
 {
     /// <summary>MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519.</summary>
     X25519_Aes128Gcm_Sha256_Ed25519 = 0x0001,
@@ -32,7 +32,7 @@ public enum Ciphersuite : ushort
 /// Static descriptor of the one ciphersuite implemented by the reference
 /// provider. Other suites throw <see cref="NotSupportedException"/>.
 /// </summary>
-public static class CiphersuiteInfo
+internal static class CiphersuiteInfo
 {
     /// <summary>The only ciphersuite the reference provider implements.</summary>
     public const Ciphersuite Supported = Ciphersuite.X25519_Aes128Gcm_Sha256_Ed25519;

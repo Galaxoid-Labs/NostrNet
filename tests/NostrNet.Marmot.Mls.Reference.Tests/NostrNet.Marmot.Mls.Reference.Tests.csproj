@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <!-- The test project consumes its own ReferenceMarmotMlsProvider on
+         purpose; suppress the experimental warning the attribute emits. -->
+    <NoWarn>$(NoWarn);NMARMOT0001</NoWarn>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="coverlet.collector" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />

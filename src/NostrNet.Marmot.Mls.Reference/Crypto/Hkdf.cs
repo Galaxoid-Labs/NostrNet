@@ -31,7 +31,7 @@ using SysEncoding = System.Text.Encoding;
 namespace NostrNet.Marmot.Mls.Reference.Crypto;
 
 /// <summary>HKDF-SHA256 helpers with the labeled variants used by HPKE and MLS.</summary>
-public static class Hkdf
+internal static class Hkdf
 {
     private const string HpkeVersionLabel = "HPKE-v1";
     private const string MlsVersionLabel = "MLS 1.0 ";

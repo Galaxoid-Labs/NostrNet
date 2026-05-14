@@ -20,7 +20,7 @@ namespace NostrNet.Marmot.Mls.Reference.Wire;
 /// Identity bytes. For Marmot usage, this carries the 32-byte Nostr x-only
 /// pubkey of the member, but the credential layer treats it as opaque.
 /// </param>
-public sealed record BasicCredential(byte[] Identity)
+internal sealed record BasicCredential(byte[] Identity)
 {
     /// <summary>Writes the Credential wrapping to a TLS stream.</summary>
     public void Write(ref TlsWriter w)
