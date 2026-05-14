@@ -30,6 +30,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [11](https://github.com/nostr-protocol/nips/blob/master/11.md) | Relay information document |
 | [13](https://github.com/nostr-protocol/nips/blob/master/13.md) | Proof of work (mining + validation) |
 | [17](https://github.com/nostr-protocol/nips/blob/master/17.md) | Private direct messages |
+| [18](https://github.com/nostr-protocol/nips/blob/master/18.md) | Reposts (kind 6 for kind-1 notes, kind 16 generic) + `q`-tag quote-reposts |
 | [19](https://github.com/nostr-protocol/nips/blob/master/19.md) | Bech32 entities (`npub`, `nsec`, `note`, `nprofile`, `nevent`, `naddr`) |
 | [21](https://github.com/nostr-protocol/nips/blob/master/21.md) | `nostr:` URI scheme |
 | [22](https://github.com/nostr-protocol/nips/blob/master/22.md) | Comments (kind 1111) — threaded uppercase/lowercase root + parent tags |

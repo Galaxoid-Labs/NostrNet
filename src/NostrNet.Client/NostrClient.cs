@@ -6,6 +6,7 @@ using NostrNet.Events;
 using NostrNet.Keys;
 using NostrNet.Pictures;
 using NostrNet.Relay;
+using NostrNet.Reposts;
 
 namespace NostrNet.Client;
 
@@ -243,6 +244,75 @@ public sealed class NostrClient : IAsyncDisposable
         }
 
         var ev = builder.BuildAndSign(key);
+        return await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reposts <paramref name="originalEvent"/> per NIP-18. The kind
+    /// is chosen automatically: kind 6 for kind-1 originals, kind 16
+    /// for anything else. The original event is embedded as JSON in
+    /// the repost's content field by default — pass an explicit
+    /// <see cref="RepostEvent.Create"/> builder + <c>EmbedOriginal(false)</c>
+    /// to opt out (e.g. for NIP-70 protected originals).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
+    public async Task<IReadOnlyDictionary<Uri, PublishResult>> RepostAsync(
+        NostrEvent originalEvent,
+        string? relayHint = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(originalEvent);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(RepostAsync));
+
+        var builder = RepostEvent.Create(originalEvent);
+        if (relayHint is not null)
+        {
+            builder.WithRelayHint(relayHint);
+        }
+
+        return await _pool.PublishAsync(builder.BuildAndSign(key), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Posts a NIP-18 quote-repost: a regular kind-1 note containing
+    /// <paramref name="comment"/> as content plus a <c>q</c> tag
+    /// referencing <paramref name="quotedEvent"/>. The <c>q</c> tag —
+    /// instead of an <c>e</c> tag — keeps the quote out of the
+    /// quoted event's reply thread.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
+    public async Task<IReadOnlyDictionary<Uri, PublishResult>> QuoteRepostAsync(
+        string comment,
+        NostrEvent quotedEvent,
+        string? relayHint = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(comment);
+        ArgumentNullException.ThrowIfNull(quotedEvent);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(QuoteRepostAsync));
+
+        // Per NIP-18, only include the pubkey on the q-tag for regular
+        // (non-replaceable) events. Kinds 30000-39999 + replaceable
+        // ranges are coordinate-addressed; for those we keep the
+        // pubkey omitted so consumers know to dereference via the
+        // 'a' tag form (which a future overload can carry).
+        bool isRegularEvent = quotedEvent.Kind is < 10000 or >= 40000;
+        var q = Repost.QuoteTag(
+            quotedEvent.Id,
+            relayHint,
+            isRegularEvent ? quotedEvent.PubKey : null);
+
+        var ev = new UnsignedEvent
+        {
+            PubKey = key.PublicKey,
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            Kind = 1,
+            Tags = new IReadOnlyList<string>[] { q },
+            Content = comment,
+        }.Sign(key);
+
         return await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
     }
 
