@@ -1,15 +1,20 @@
 name: Release
 
-# Push a semver tag (e.g. v0.1.0, v0.1.0-rc1) to trigger a release.
-# Produces four .nupkg files and attaches them to a GitHub release with
-# auto-generated notes from the commits since the previous tag.
+# Push a semver tag (e.g. v0.1.0, v0.1.0-preview1) to trigger a release.
+#
+# Three OS-specific jobs build the native crate for two RIDs each via
+# `rustup target add` + `cargo build --target`. A final job downloads
+# all six native artifacts, lays them out under
+# src/NostrNet.Marmot.Mls.Native/prebuilt/<rid>/, runs `dotnet pack`,
+# and attaches all .nupkg + .snupkg files to a draft GitHub release.
+
 on:
   push:
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g. 0.1.0)'
+        description: 'Version to publish (e.g. 0.1.0-preview1)'
         required: true
         type: string
 
@@ -19,13 +24,137 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
 
 jobs:
-  release:
-    name: Pack + create release
+  # ──────────────────────────────────────────────────────────────────
+  # Native builds: each OS runner produces the two RIDs natural to it.
+  # ──────────────────────────────────────────────────────────────────
+
+  native-macos:
+    name: native — macOS (osx-x64 + osx-arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Build osx-x64
+        run: cargo build --release --target x86_64-apple-darwin
+        working-directory: nostrnet-marmot-native
+      - name: Build osx-arm64
+        run: cargo build --release --target aarch64-apple-darwin
+        working-directory: nostrnet-marmot-native
+
+      - name: Stage artifacts
+        run: |
+          set -e
+          mkdir -p staging/osx-x64 staging/osx-arm64
+          cp nostrnet-marmot-native/target/x86_64-apple-darwin/release/libnostrnet_marmot_native.dylib staging/osx-x64/
+          cp nostrnet-marmot-native/target/aarch64-apple-darwin/release/libnostrnet_marmot_native.dylib staging/osx-arm64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-osx-x64
+          path: staging/osx-x64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-osx-arm64
+          path: staging/osx-arm64/
+          if-no-files-found: error
+
+  native-linux:
+    name: native — Linux (linux-x64 + linux-arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - name: Install aarch64 cross-linker
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build linux-x64
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+        working-directory: nostrnet-marmot-native
+
+      - name: Build linux-arm64
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+        working-directory: nostrnet-marmot-native
+        env:
+          # rusqlite's bundled SQLite builds via the `cc` crate; point
+          # both Rust and C at the cross-linker.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+
+      - name: Stage artifacts
+        run: |
+          set -e
+          mkdir -p staging/linux-x64 staging/linux-arm64
+          cp nostrnet-marmot-native/target/x86_64-unknown-linux-gnu/release/libnostrnet_marmot_native.so staging/linux-x64/
+          cp nostrnet-marmot-native/target/aarch64-unknown-linux-gnu/release/libnostrnet_marmot_native.so staging/linux-arm64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-x64
+          path: staging/linux-x64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-arm64
+          path: staging/linux-arm64/
+          if-no-files-found: error
+
+  native-windows:
+    name: native — Windows (win-x64 + win-arm64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+
+      - name: Build win-x64
+        run: cargo build --release --target x86_64-pc-windows-msvc
+        working-directory: nostrnet-marmot-native
+      - name: Build win-arm64
+        run: cargo build --release --target aarch64-pc-windows-msvc
+        working-directory: nostrnet-marmot-native
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force staging/win-x64, staging/win-arm64 | Out-Null
+          Copy-Item nostrnet-marmot-native/target/x86_64-pc-windows-msvc/release/nostrnet_marmot_native.dll staging/win-x64/
+          Copy-Item nostrnet-marmot-native/target/aarch64-pc-windows-msvc/release/nostrnet_marmot_native.dll staging/win-arm64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-win-x64
+          path: staging/win-x64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-win-arm64
+          path: staging/win-arm64/
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────
+  # Pack + release: gather all native artifacts, lay them out under
+  # prebuilt/<rid>/, run `dotnet pack`, attach .nupkg files to a
+  # GitHub release.
+  # ──────────────────────────────────────────────────────────────────
+
+  pack-and-release:
+    name: Pack + release
+    needs: [native-macos, native-linux, native-windows]
     runs-on: ubuntu-latest
     permissions:
       # softprops/action-gh-release needs contents:write to create the release.
       contents: write
-
     steps:
       - uses: actions/checkout@v6
         with:
@@ -37,17 +166,41 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # NostrNet.Marmot.Mls.Native.csproj's CargoBuild target runs
+      # `cargo build` during `dotnet pack`. Rust must be on PATH.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Resolve version
         id: version
         run: |
+          set -e
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
           else
-            # GITHUB_REF_NAME is the tag (e.g. v0.1.0); strip the leading "v".
+            # GITHUB_REF_NAME is the tag (e.g. v0.1.0-preview1); strip the leading "v".
             VERSION="${GITHUB_REF_NAME#v}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building NostrNet $VERSION"
+          echo "Releasing NostrNet $VERSION"
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: native-artifacts
+          pattern: native-*
+
+      - name: Stage prebuilt/<rid>/
+        run: |
+          set -e
+          PREBUILT=src/NostrNet.Marmot.Mls.Native/prebuilt
+          mkdir -p "$PREBUILT"
+          for rid in osx-x64 osx-arm64 linux-x64 linux-arm64 win-x64 win-arm64; do
+            mkdir -p "$PREBUILT/$rid"
+            cp "native-artifacts/native-$rid/"* "$PREBUILT/$rid/"
+          done
+          echo "Staged native artifacts:"
+          find "$PREBUILT" -type f
 
       - name: Cache NuGet packages
         uses: actions/cache@v5
@@ -60,22 +213,14 @@ jobs:
       - name: Restore
         run: dotnet restore
 
-      # Re-run tests on the tagged commit as a safety net even though CI has
-      # already validated this commit on push to main. Cheap insurance against
-      # tagging the wrong sha.
-      - name: Test
-        run: dotnet test --configuration Release --verbosity normal
-
       - name: Pack
-        run: |
-          VERSION='${{ steps.version.outputs.version }}'
-          for proj in Core Crypto Relay Client; do
-            dotnet pack "src/NostrNet.$proj" \
-              --configuration Release \
-              --output ./packages \
-              -p:Version="$VERSION" \
-              -p:ContinuousIntegrationBuild=true
-          done
+        run: >-
+          dotnet pack NostrNet.slnx
+          --configuration Release
+          --no-restore
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:ContinuousIntegrationBuild=true
+          --output ./packages
 
       - name: List built packages
         run: ls -lh ./packages
@@ -85,8 +230,11 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: NostrNet ${{ steps.version.outputs.version }}
-          files: ./packages/*.nupkg
+          files: |
+            ./packages/*.nupkg
+            ./packages/*.snupkg
           generate_release_notes: true
           fail_on_unmatched_files: true
-          # Pre-release flag for tags like v0.1.0-rc1, v0.2.0-beta, etc.
+          # Pre-release flag for tags like v0.1.0-preview1, v0.2.0-rc1, etc.
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          draft: false
