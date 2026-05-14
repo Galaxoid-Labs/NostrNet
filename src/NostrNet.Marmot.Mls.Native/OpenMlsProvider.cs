@@ -37,19 +37,102 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
     // ────────────────────────────────────────────────────────────
 
     /// <inheritdoc/>
-    public Task<KeyPackageBundle> BuildKeyPackageAsync(
+    public unsafe Task<KeyPackageBundle> BuildKeyPackageAsync(
         PublicKey identityPubkey,
         ushort ciphersuite,
         IReadOnlyList<ushort> extensions,
         IReadOnlyList<ushort> proposals,
         CancellationToken ct = default)
-        => throw new NotImplementedException("BuildKeyPackageAsync lands in the next FFI iteration.");
+    {
+        ArgumentNullException.ThrowIfNull(identityPubkey);
+        ArgumentNullException.ThrowIfNull(extensions);
+        ArgumentNullException.ThrowIfNull(proposals);
+
+        Span<byte> identity = stackalloc byte[32];
+        identityPubkey.CopyTo(identity);
+
+        ushort[] extsArr = extensions.ToArray();
+        ushort[] propsArr = proposals.ToArray();
+
+        IntPtr bundlePtr = IntPtr.Zero;
+        nuint bundleLen = 0;
+        IntPtr refPtr = IntPtr.Zero;
+        nuint refLen = 0;
+
+        int rc;
+        fixed (byte* identityPin = identity)
+        fixed (ushort* extsPin = extsArr)
+        fixed (ushort* propsPin = propsArr)
+        {
+            rc = NativeBindings.BuildKeyPackage(
+                _handle.DangerousPointer,
+                identityPin, (nuint)identity.Length,
+                ciphersuite,
+                extsPin, (nuint)extsArr.Length,
+                propsPin, (nuint)propsArr.Length,
+                &bundlePtr, &bundleLen,
+                &refPtr, &refLen);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(BuildKeyPackageAsync));
+        }
+
+        byte[] bundle = FfiBuffer.CopyAndFree(bundlePtr, bundleLen);
+        byte[] kpRef = FfiBuffer.CopyAndFree(refPtr, refLen);
+
+        return Task.FromResult(new KeyPackageBundle(
+            BundleBytes: bundle,
+            Ciphersuite: ciphersuite,
+            ProtocolVersion: "1.0",
+            KeyPackageRef: Convert.ToHexStringLower(kpRef)));
+    }
 
     /// <inheritdoc/>
-    public Task<KeyPackageInfo> ParseKeyPackageAsync(
+    public unsafe Task<KeyPackageInfo> ParseKeyPackageAsync(
         ReadOnlyMemory<byte> keyPackageBundleBytes,
         CancellationToken ct = default)
-        => throw new NotImplementedException("ParseKeyPackageAsync lands in the next FFI iteration.");
+    {
+        var span = keyPackageBundleBytes.Span;
+        IntPtr identityPtr = IntPtr.Zero;
+        nuint identityLen = 0;
+        IntPtr refPtr = IntPtr.Zero;
+        nuint refLen = 0;
+        ushort cs = 0;
+
+        int rc;
+        fixed (byte* bundlePin = span)
+        {
+            rc = NativeBindings.ParseKeyPackage(
+                bundlePin, (nuint)span.Length,
+                &identityPtr, &identityLen,
+                &refPtr, &refLen,
+                &cs);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(ParseKeyPackageAsync));
+        }
+
+        byte[] identity = FfiBuffer.CopyAndFree(identityPtr, identityLen);
+        byte[] kpRef = FfiBuffer.CopyAndFree(refPtr, refLen);
+
+        if (identity.Length != 32)
+        {
+            throw new InvalidDataException(
+                $"BasicCredential identity must be 32 bytes (a Nostr pubkey); got {identity.Length}.");
+        }
+
+        return Task.FromResult(new KeyPackageInfo(
+            IdentityPubkey: new PublicKey(identity),
+            Ciphersuite: cs,
+            ProtocolVersion: "1.0",
+            Extensions: Array.Empty<ushort>(),
+            Proposals: Array.Empty<ushort>(),
+            KeyPackageRef: Convert.ToHexStringLower(kpRef)));
+    }
 
     /// <inheritdoc/>
     public Task<CreateGroupResult> CreateGroupAsync(

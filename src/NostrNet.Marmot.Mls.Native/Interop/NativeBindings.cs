@@ -41,4 +41,25 @@ internal static partial class NativeBindings
 
     [LibraryImport(Library, EntryPoint = "marmot_abi_version")]
     public static partial uint AbiVersion();
+
+    // ────────────────────────────────────────────────────────────
+    // KeyPackage build / parse.
+    // ────────────────────────────────────────────────────────────
+
+    [LibraryImport(Library, EntryPoint = "marmot_build_keypackage")]
+    public static unsafe partial int BuildKeyPackage(
+        IntPtr provider,
+        byte* identityPtr, nuint identityLen,
+        ushort ciphersuite,
+        ushort* extensionsPtr, nuint extensionsLen,
+        ushort* proposalsPtr, nuint proposalsLen,
+        IntPtr* outBundlePtr, nuint* outBundleLen,
+        IntPtr* outKpRefPtr, nuint* outKpRefLen);
+
+    [LibraryImport(Library, EntryPoint = "marmot_parse_keypackage")]
+    public static unsafe partial int ParseKeyPackage(
+        byte* bundlePtr, nuint bundleLen,
+        IntPtr* outIdentityPtr, nuint* outIdentityLen,
+        IntPtr* outKpRefPtr, nuint* outKpRefLen,
+        ushort* outCiphersuite);
 }

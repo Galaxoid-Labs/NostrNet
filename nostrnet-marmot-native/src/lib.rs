@@ -25,12 +25,14 @@
 
 mod buffer;
 mod errors;
+mod keypackage;
 mod provider;
 
 use std::ffi::c_char;
 
 pub use buffer::*;
 pub use errors::*;
+pub use keypackage::*;
 pub use provider::*;
 
 // ──────────────────────────────────────────────────────────────────────
@@ -92,4 +94,75 @@ pub unsafe extern "C" fn marmot_buffer_free(ptr: *mut u8, len: usize) {
 #[unsafe(no_mangle)]
 pub extern "C" fn marmot_abi_version() -> u32 {
     1
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// KeyPackage operations.
+// ──────────────────────────────────────────────────────────────────────
+
+/// Builds a fresh KeyPackage. See `keypackage::build_keypackage`.
+///
+/// # Safety
+/// See `keypackage::build_keypackage`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn marmot_build_keypackage(
+    provider: *mut Provider,
+    identity_ptr: *const u8,
+    identity_len: usize,
+    ciphersuite: u16,
+    extensions_ptr: *const u16,
+    extensions_len: usize,
+    proposals_ptr: *const u16,
+    proposals_len: usize,
+    out_bundle_ptr: *mut *mut u8,
+    out_bundle_len: *mut usize,
+    out_kp_ref_ptr: *mut *mut u8,
+    out_kp_ref_len: *mut usize,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        keypackage::build_keypackage(
+            provider,
+            identity_ptr,
+            identity_len,
+            ciphersuite,
+            extensions_ptr,
+            extensions_len,
+            proposals_ptr,
+            proposals_len,
+            out_bundle_ptr,
+            out_bundle_len,
+            out_kp_ref_ptr,
+            out_kp_ref_len,
+        )
+    }
+}
+
+/// Parses a KeyPackage bundle. See `keypackage::parse_keypackage`.
+///
+/// # Safety
+/// See `keypackage::parse_keypackage`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_parse_keypackage(
+    bundle_ptr: *const u8,
+    bundle_len: usize,
+    out_identity_ptr: *mut *mut u8,
+    out_identity_len: *mut usize,
+    out_kp_ref_ptr: *mut *mut u8,
+    out_kp_ref_len: *mut usize,
+    out_ciphersuite: *mut u16,
+) -> i32 {
+    errors::clear_last_error();
+    unsafe {
+        keypackage::parse_keypackage(
+            bundle_ptr,
+            bundle_len,
+            out_identity_ptr,
+            out_identity_len,
+            out_kp_ref_ptr,
+            out_kp_ref_len,
+            out_ciphersuite,
+        )
+    }
 }
