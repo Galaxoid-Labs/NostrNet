@@ -76,6 +76,7 @@ internal static partial class NativeBindings
         byte* creatorIdentityPtr, nuint creatorIdentityLen,
         byte* nostrGroupIdPtr,
         ushort ciphersuite,
+        byte* groupDataPtr, nuint groupDataLen,
         IntPtr* outExporterPtr, nuint* outExporterLen);
 
     [LibraryImport(Library, EntryPoint = "marmot_add_members")]

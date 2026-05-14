@@ -95,17 +95,32 @@ fn build_member_credential(
 
 /// Create a new MLS group with the founder as the only member.
 ///
+/// `group_data_ptr` / `group_data_len` carry the TLS-serialized Marmot
+/// Group Data extension (MIP-01) payload, which becomes a 0xF2EE
+/// `GroupContextExtension` and is also listed in the group's
+/// `required_capabilities` so non-Marmot clients reject membership.
+///
 /// # Safety
 /// Standard FFI safety. `nostr_group_id_ptr` must point at a 32-byte buffer.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn create_group(
     provider: *mut Provider,
     creator_identity_ptr: *const u8,
     creator_identity_len: usize,
     nostr_group_id_ptr: *const u8,
     ciphersuite: u16,
+    group_data_ptr: *const u8,
+    group_data_len: usize,
     out_exporter_ptr: *mut *mut u8,
     out_exporter_len: *mut usize,
 ) -> i32 {
+    use crate::keypackage::{
+        NOSTR_GROUP_DATA_EXTENSION_TYPE, marmot_capabilities,
+    };
+    use openmls::extensions::{
+        Extension, ExtensionType, Extensions, RequiredCapabilitiesExtension, UnknownExtension,
+    };
+
     if provider.is_null() {
         return fail(ErrorCode::NullArgument, "provider handle is null");
     }
@@ -118,6 +133,10 @@ pub unsafe fn create_group(
     let group_id = match unsafe { read_group_id(nostr_group_id_ptr) } {
         Ok(g) => g,
         Err(msg) => return fail(ErrorCode::NullArgument, msg),
+    };
+    let group_data = match unsafe { input_slice(group_data_ptr, group_data_len) } {
+        Some(s) => s.to_vec(),
+        None => return fail(ErrorCode::NullArgument, "group_data pointer is null"),
     };
     let suite = match ciphersuite_from_u16(ciphersuite) {
         Some(s) => s,
@@ -135,9 +154,40 @@ pub unsafe fn create_group(
             Err((code, msg)) => return fail(code, msg),
         };
 
+    // Build the Marmot group-context extensions: the NostrGroupData blob
+    // plus a RequiredCapabilities entry that forces every future member
+    // to declare support for 0xF2EE. This mirrors mdk-core exactly.
+    let nostr_group_data_extension = Extension::Unknown(
+        NOSTR_GROUP_DATA_EXTENSION_TYPE,
+        UnknownExtension(group_data),
+    );
+    let required_capabilities = Extension::RequiredCapabilities(
+        RequiredCapabilitiesExtension::new(
+            &[ExtensionType::Unknown(NOSTR_GROUP_DATA_EXTENSION_TYPE)],
+            &[],
+            &[],
+        ),
+    );
+    let context_extensions = match Extensions::from_vec(vec![
+        nostr_group_data_extension,
+        required_capabilities,
+    ]) {
+        Ok(e) => e,
+        Err(e) => {
+            return fail(
+                ErrorCode::OpenMlsFailure,
+                format!("Extensions::from_vec: {e:?}"),
+            );
+        }
+    };
+
+    let capabilities = marmot_capabilities(provider.crypto.rand(), suite);
+
     let group_config = MlsGroupCreateConfig::builder()
         .ciphersuite(suite)
         .use_ratchet_tree_extension(true)
+        .capabilities(capabilities)
+        .with_group_context_extensions(context_extensions)
         .build();
 
     let group_id_obj = GroupId::from_slice(&group_id);

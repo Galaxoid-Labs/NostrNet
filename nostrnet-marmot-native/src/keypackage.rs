@@ -7,10 +7,46 @@ use crate::errors::{ErrorCode, fail, set_last_error};
 use crate::provider::Provider;
 
 use crate::provider::MarmotCryptoProvider;
+use openmls::extensions::ExtensionType;
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use tls_codec::{Deserialize, Serialize};
+
+/// Marmot Nostr Group Data extension type per MIP-01.
+pub(crate) const NOSTR_GROUP_DATA_EXTENSION_TYPE: u16 = 0xF2EE;
+
+/// Non-default MLS extensions Marmot KeyPackages MUST advertise (MIP-00).
+/// LastResort marks the KeyPackage as reusable across multiple invites;
+/// NostrGroupData (0xF2EE) signals support for Marmot's group-context
+/// extension carrying Nostr-specific metadata.
+pub(crate) const MARMOT_SUPPORTED_EXTENSIONS: [ExtensionType; 2] = [
+    ExtensionType::LastResort,
+    ExtensionType::Unknown(NOSTR_GROUP_DATA_EXTENSION_TYPE),
+];
+
+/// Non-default MLS proposals Marmot KeyPackages MUST advertise (MIP-00/MIP-03).
+/// SelfRemove (0x000A) lets a member depart without requiring an admin commit.
+pub(crate) const MARMOT_SUPPORTED_PROPOSALS: [ProposalType; 1] = [ProposalType::SelfRemove];
+
+/// Build the Marmot baseline KeyPackage / LeafNode capability set.
+///
+/// Matches the mdk-core canonical implementation: the configured
+/// ciphersuite, the Marmot-required extensions and proposals, and
+/// GREASE values injected per RFC 9420 §13.5 for forward extensibility.
+pub(crate) fn marmot_capabilities(
+    crypto: &impl openmls_traits::random::OpenMlsRand,
+    ciphersuite: Ciphersuite,
+) -> Capabilities {
+    Capabilities::new(
+        None,
+        Some(&[ciphersuite]),
+        Some(&MARMOT_SUPPORTED_EXTENSIONS),
+        Some(&MARMOT_SUPPORTED_PROPOSALS),
+        None,
+    )
+    .with_grease(crypto)
+}
 
 /// Resolves a ciphersuite identifier (u16) into an OpenMLS Ciphersuite.
 pub(crate) fn ciphersuite_from_u16(v: u16) -> Option<Ciphersuite> {
@@ -113,7 +149,16 @@ fn build_keypackage_inner(
         signature_key: signature_keys.public().into(),
     };
 
+    // Mirror mdk-core: hardcode the Marmot baseline capabilities + mark
+    // the KeyPackage as last_resort. The `_extensions` / `_proposals`
+    // FFI inputs are retained for forward-compat but ignored — Marmot
+    // MIP-00 prescribes the full set, so divergence would just produce
+    // non-interoperable KeyPackages.
+    let capabilities = marmot_capabilities(provider.rand(), ciphersuite);
+
     let key_package_bundle = KeyPackage::builder()
+        .leaf_node_capabilities(capabilities)
+        .mark_as_last_resort()
         .build(
             ciphersuite,
             provider,

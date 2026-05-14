@@ -136,7 +136,7 @@ pub unsafe extern "C" fn marmot_buffer_free(ptr: *mut u8, len: usize) {
 /// mismatched binaries.
 #[unsafe(no_mangle)]
 pub extern "C" fn marmot_abi_version() -> u32 {
-    1
+    2
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -224,6 +224,8 @@ pub unsafe extern "C" fn marmot_create_group(
     creator_identity_len: usize,
     nostr_group_id_ptr: *const u8,
     ciphersuite: u16,
+    group_data_ptr: *const u8,
+    group_data_len: usize,
     out_exporter_ptr: *mut *mut u8,
     out_exporter_len: *mut usize,
 ) -> i32 {
@@ -235,6 +237,8 @@ pub unsafe extern "C" fn marmot_create_group(
             creator_identity_len,
             nostr_group_id_ptr,
             ciphersuite,
+            group_data_ptr,
+            group_data_len,
             out_exporter_ptr,
             out_exporter_len,
         )

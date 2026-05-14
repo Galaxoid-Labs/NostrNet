@@ -10,9 +10,9 @@ namespace NostrNet.Marmot.Mls.Native.Tests;
 public class LifecycleTests
 {
     [Fact]
-    public void NativeAbiVersion_Is1()
+    public void NativeAbiVersion_Is2()
     {
-        Assert.Equal(1u, OpenMlsProvider.NativeAbiVersion());
+        Assert.Equal(2u, OpenMlsProvider.NativeAbiVersion());
     }
 
     [Fact]

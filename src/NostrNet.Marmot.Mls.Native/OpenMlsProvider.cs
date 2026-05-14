@@ -169,17 +169,26 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
         Span<byte> identity = stackalloc byte[32];
         creatorPubkey.CopyTo(identity);
 
+        // Encode the Marmot Group Data extension (MIP-01) so the Rust
+        // crate can install it as a GroupContextExtension (0xF2EE) and
+        // add the matching required_capabilities entry. Without this the
+        // created group would not be recognized as a Marmot group by
+        // any other client (mdk-core, White Noise, etc.).
+        byte[] groupDataBytes = groupData.Encode();
+
         IntPtr exporterPtr = IntPtr.Zero;
         nuint exporterLen = 0;
         int rc;
         fixed (byte* identityPin = identity)
         fixed (byte* gidPin = groupData.NostrGroupId)
+        fixed (byte* groupDataPin = groupDataBytes)
         {
             rc = NativeBindings.CreateGroup(
                 _handle.DangerousPointer,
                 identityPin, (nuint)identity.Length,
                 gidPin,
                 ciphersuite,
+                groupDataPin, (nuint)groupDataBytes.Length,
                 &exporterPtr, &exporterLen);
         }
 

@@ -147,17 +147,29 @@ public static class MarmotChat
         ArgumentException.ThrowIfNullOrEmpty(slot);
         ArgumentNullException.ThrowIfNull(relays);
 
+        // The Rust crate hardcodes the Marmot baseline capabilities
+        // (LastResort + NostrGroupData extensions, SelfRemove proposal)
+        // to match mdk-core exactly. The lists below are accepted for
+        // forward compatibility but currently ignored by the provider;
+        // the Nostr tags we attach below MUST match what the LeafNode
+        // actually advertises or other clients will reject our KP.
         var bundle = await provider.BuildKeyPackageAsync(
             myKey.PublicKey,
             ciphersuite,
-            extensions: new ushort[] { MarmotMlsExtensions.MarmotGroupData },
-            proposals: Array.Empty<ushort>(),
+            extensions: new ushort[]
+            {
+                MarmotMlsExtensions.LastResort,
+                MarmotMlsExtensions.MarmotGroupData,
+            },
+            proposals: new ushort[] { MarmotMlsProposalTypes.SelfRemove },
             ct).ConfigureAwait(false);
 
         var builder = KeyPackageEvent.Create(slot)
             .WithBundleBytes(bundle.BundleBytes)
             .WithCiphersuite(bundle.Ciphersuite)
-            .WithExtension(MarmotMlsExtensions.MarmotGroupData);
+            .WithExtension(MarmotMlsExtensions.LastResort)
+            .WithExtension(MarmotMlsExtensions.MarmotGroupData)
+            .WithProposal(MarmotMlsProposalTypes.SelfRemove);
 
         if (bundle.KeyPackageRef is not null)
         {
