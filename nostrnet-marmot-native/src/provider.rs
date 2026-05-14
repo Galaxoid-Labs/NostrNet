@@ -68,6 +68,15 @@ pub struct Provider {
     /// the inviter used a different-length MLS GroupId (e.g. mdk-core
     /// and White Noise use 16 bytes).
     pub(crate) marmot_meta: std::sync::Mutex<rusqlite::Connection>,
+    /// Serializes every FFI entry that touches the OpenMLS storage.
+    /// `openmls_sqlite_storage::Connection` is wrapped in a `RefCell`
+    /// internally and is **not** `Sync`; concurrent FFI calls from
+    /// different .NET / app threads would otherwise hit
+    /// "RefCell already borrowed" and abort the process via Rust's
+    /// no-unwind across the FFI boundary. The lock is coarse-grained
+    /// (one per Provider) — fine, because MLS ops are sub-millisecond
+    /// and the contention surface is tiny.
+    pub(crate) ffi_lock: std::sync::Mutex<()>,
 }
 
 impl Provider {
@@ -115,8 +124,38 @@ impl Provider {
                 storage,
             },
             marmot_meta: std::sync::Mutex::new(meta_conn),
+            ffi_lock: std::sync::Mutex::new(()),
         }
     }
+}
+
+/// Guard helper used at every FFI export that takes a `*mut Provider`.
+/// Locks the per-provider FFI mutex for the duration of the caller's
+/// scope. Returns `None` when the pointer is null so the caller can
+/// fall through to its own null-pointer error reporting.
+///
+/// Mutex-poisoned state is recovered (`into_inner`) so a previous
+/// panic-mid-call doesn't permanently brick the provider — though in
+/// practice we panic with `panic = "abort"` so this only matters for
+/// tests.
+pub(crate) unsafe fn lock_ffi(
+    provider: *mut Provider,
+) -> Option<std::sync::MutexGuard<'static, ()>> {
+    if provider.is_null() {
+        return None;
+    }
+    // SAFETY: caller asserts `provider` is a live ProviderHandle.
+    let p: &Provider = unsafe { &*provider };
+    let guard = match p.ffi_lock.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    // Erase the lifetime — the guard is dropped before the caller
+    // returns to .NET, and `Provider` outlives every FFI call.
+    Some(unsafe { std::mem::transmute::<
+        std::sync::MutexGuard<'_, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    >(guard) })
 }
 
 impl Default for Provider {

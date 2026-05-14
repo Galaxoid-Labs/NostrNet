@@ -165,6 +165,7 @@ pub unsafe extern "C" fn marmot_build_keypackage(
     out_kp_ref_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         keypackage::build_keypackage(
             provider,
@@ -231,6 +232,7 @@ pub unsafe extern "C" fn marmot_create_group(
     out_exporter_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         group::create_group(
             provider,
@@ -260,6 +262,7 @@ pub unsafe extern "C" fn marmot_list_groups(
     out_blob_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe { group::list_groups(provider, out_blob_ptr, out_blob_len) }
 }
 
@@ -282,6 +285,7 @@ pub unsafe extern "C" fn marmot_add_members(
     out_exporter_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         group::add_members(
             provider,
@@ -313,6 +317,7 @@ pub unsafe extern "C" fn marmot_join_from_welcome(
     out_exporter_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         group::join_from_welcome(
             provider,
@@ -341,6 +346,7 @@ pub unsafe extern "C" fn marmot_remove_members(
     out_exporter_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         group::remove_members(
             provider,
@@ -367,6 +373,7 @@ pub unsafe extern "C" fn marmot_self_update(
     out_exporter_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         group::self_update(
             provider,
@@ -389,6 +396,7 @@ pub unsafe extern "C" fn marmot_current_exporter(
     out_exporter_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         group::current_exporter(
             provider,
@@ -415,6 +423,7 @@ pub unsafe extern "C" fn marmot_encrypt_application_message(
     out_msg_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         messages::encrypt_application_message(
             provider,
@@ -446,6 +455,7 @@ pub unsafe extern "C" fn marmot_process_incoming_message(
     out_sender_len: *mut usize,
 ) -> i32 {
     errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
     unsafe {
         messages::process_incoming_message(
             provider,
