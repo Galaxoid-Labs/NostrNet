@@ -265,14 +265,34 @@ public sealed class ReferenceMarmotMlsProvider : IMarmotMlsProvider
         ReadOnlyMemory<byte> nostrGroupId,
         ReadOnlyMemory<byte> plaintext,
         CancellationToken ct = default)
-        => throw NotSupported(nameof(EncryptApplicationMessageAsync));
+    {
+        if (!TryGetGroup(nostrGroupId, out var group))
+        {
+            throw new InvalidOperationException("No group with the given nostrGroupId is loaded in this provider.");
+        }
+
+        byte[] msg = group.EncryptApplicationMessage(plaintext.Span);
+        return Task.FromResult(msg);
+    }
 
     /// <inheritdoc/>
     public Task<ProcessedMlsMessage> ProcessIncomingMlsMessageAsync(
         ReadOnlyMemory<byte> nostrGroupId,
         ReadOnlyMemory<byte> mlsMessageBytes,
         CancellationToken ct = default)
-        => throw NotSupported(nameof(ProcessIncomingMlsMessageAsync));
+    {
+        if (!TryGetGroup(nostrGroupId, out var group))
+        {
+            throw new InvalidOperationException("No group with the given nostrGroupId is loaded in this provider.");
+        }
+
+        var decoded = group.DecryptApplicationMessage(mlsMessageBytes.Span);
+        return Task.FromResult(new ProcessedMlsMessage(
+            Kind: MlsMessageKind.Application,
+            ApplicationPayload: decoded.Plaintext,
+            EpochAdvanced: false,
+            NewExporterSecret: null));
+    }
 
     /// <inheritdoc/>
     public Task<byte[]> CurrentExporterSecretAsync(

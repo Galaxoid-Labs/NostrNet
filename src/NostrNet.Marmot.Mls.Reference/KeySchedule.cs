@@ -53,6 +53,13 @@ internal sealed record EpochSecrets
     /// <summary>The exporter_secret. Source of MLS-Exporter outputs.</summary>
     public required byte[] ExporterSecret { get; init; }
 
+    /// <summary>
+    /// The encryption_secret — root of the per-leaf application-message
+    /// ratchets. RFC 9420 §15 builds a "secret tree" from this; for our
+    /// 2-leaf case we just derive two child secrets directly.
+    /// </summary>
+    public required byte[] EncryptionSecret { get; init; }
+
     /// <summary>HMAC key used for confirmation_tag (HMAC over confirmed_transcript_hash).</summary>
     public required byte[] ConfirmationKey { get; init; }
 
@@ -165,6 +172,7 @@ internal static class KeySchedule
         }
 
         byte[] exporterSecret = Hkdf.DeriveSecret(epochSecret, SysEncoding.ASCII.GetBytes("exporter"));
+        byte[] encryptionSecret = Hkdf.DeriveSecret(epochSecret, SysEncoding.ASCII.GetBytes("encryption"));
         byte[] confirmationKey = Hkdf.DeriveSecret(epochSecret, SysEncoding.ASCII.GetBytes("confirm"));
         byte[] initSecretNext = Hkdf.DeriveSecret(epochSecret, SysEncoding.ASCII.GetBytes("init"));
 
@@ -175,6 +183,7 @@ internal static class KeySchedule
             EpochSecret = epochSecret,
             InitSecretNext = initSecretNext,
             ExporterSecret = exporterSecret,
+            EncryptionSecret = encryptionSecret,
             ConfirmationKey = confirmationKey,
             WelcomeKey = welcomeKey,
             WelcomeNonce = welcomeNonce,

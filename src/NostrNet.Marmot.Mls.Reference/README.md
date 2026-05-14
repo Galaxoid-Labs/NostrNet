@@ -33,17 +33,19 @@ Useful as:
   `JoinGroupFromWelcomeAsync`, both sides derive identical
   `MLS-Exporter("marmot", "group-event", 32)` outputs that Marmot
   kind-445 GroupEvent content encryption keys off.
+- **Per-leaf application-message ratchet** for `EncryptApplicationMessageAsync` /
+  `ProcessIncomingMlsMessageAsync` — forward secrecy per message, plus
+  replay protection via a high-water-mark generation counter. Uses a
+  simplified subset of RFC 9420 §6.3 + §15 (no sender-data encryption,
+  no ciphersuite-sample binding, no reuse_guard) and a private-use wire
+  format (`0xFE02`); see `Wire/ApplicationMessage.cs`.
 
 ## What's NOT supported
 
-These all throw `NotSupportedException` with a pointer back to the
-exporter path:
+These all throw `NotSupportedException`:
 
 - Groups with more than two members (no TreeKEM at depth > 1).
 - Member removal, Update proposals, PSK injections, ReInit, external joins.
-- The application-message ratchet (sender-data + secret tree). For Marmot
-  this is fine: kind-445 routes around the MLSMessage ratchet by encrypting
-  application payloads directly with the per-epoch exporter secret.
 - Interop with OpenMLS or any other RFC 9420 implementation. Two
   intentional simplifications make this self-interop only:
   1. `confirmed_transcript_hash` is the empty byte string (no real

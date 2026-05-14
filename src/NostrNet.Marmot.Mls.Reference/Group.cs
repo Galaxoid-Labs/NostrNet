@@ -85,6 +85,130 @@ internal sealed class ReferenceMlsGroup
         => KeySchedule.DeriveMarmotExporterSecret(Secrets.ExporterSecret);
 
     /// <summary>
+    /// The local member's leaf index — 0 if this side created the group,
+    /// 1 if this side joined via a Welcome. Used to pick the right
+    /// outbound application ratchet.
+    /// </summary>
+    public uint LocalLeafIndex => FounderInitSk is not null ? 0u : 1u;
+
+    /// <summary>The peer's leaf index — the other of 0 / 1.</summary>
+    public uint PeerLeafIndex => LocalLeafIndex == 0u ? 1u : 0u;
+
+    private ApplicationRatchet? _outboundRatchet;
+    private ApplicationRatchet? _inboundRatchet;
+    private long _highestSeenInboundGeneration = -1;
+
+    private ApplicationRatchet GetOrCreateOutboundRatchet()
+        => _outboundRatchet ??= new ApplicationRatchet(
+            ApplicationRatchet.DeriveLeafBaseSecret(Secrets.EncryptionSecret, LocalLeafIndex));
+
+    private ApplicationRatchet GetOrCreateInboundRatchet()
+        => _inboundRatchet ??= new ApplicationRatchet(
+            ApplicationRatchet.DeriveLeafBaseSecret(Secrets.EncryptionSecret, PeerLeafIndex));
+
+    /// <summary>
+    /// Encrypts <paramref name="plaintext"/> as an application message
+    /// using the local member's outbound ratchet, advancing the
+    /// generation. Returns the full serialized
+    /// <see cref="ApplicationMessageCodec"/> bytes — pass these as the
+    /// <c>mlsMessageBytes</c> to <see cref="Events.GroupEvent.Build"/>.
+    /// </summary>
+    public byte[] EncryptApplicationMessage(ReadOnlySpan<byte> plaintext)
+    {
+        if (MemberLeaf is null)
+        {
+            throw new InvalidOperationException(
+                "Application messages require a 2-member group. Run AddMember (or JoinFromWelcome) first.");
+        }
+
+        var ratchet = GetOrCreateOutboundRatchet();
+        var (key, nonce, gen) = ratchet.NextKey();
+        try
+        {
+            return ApplicationMessageCodec.Encode(
+                groupId: Context.GroupId,
+                epoch: Context.Epoch,
+                senderLeaf: LocalLeafIndex,
+                generation: gen,
+                key: key,
+                nonce: nonce,
+                plaintext: plaintext);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+            CryptographicOperations.ZeroMemory(nonce);
+        }
+    }
+
+    /// <summary>
+    /// Decrypts an application message produced by
+    /// <see cref="EncryptApplicationMessage"/>. Enforces replay protection:
+    /// a message whose generation has already been processed throws
+    /// <see cref="CryptographicException"/>.
+    /// </summary>
+    public ApplicationMessage DecryptApplicationMessage(ReadOnlySpan<byte> mlsMessageBytes)
+    {
+        if (MemberLeaf is null)
+        {
+            throw new InvalidOperationException(
+                "Application messages require a 2-member group. Run AddMember (or JoinFromWelcome) first.");
+        }
+
+        // Peek the header to learn the sender + generation before decrypting.
+        // (The codec parses the header for us during Decode but we need the
+        // generation to advance the right ratchet.)
+        var rPeek = new NostrNet.Marmot.Encoding.TlsReader(mlsMessageBytes);
+        ushort wireFormat = rPeek.ReadUInt16BigEndian();
+        if (wireFormat != ApplicationMessageCodec.WireFormat)
+        {
+            throw new InvalidDataException(
+                $"Unknown application-message wire format 0x{wireFormat:X4}.");
+        }
+
+        var senderGroupId = rPeek.ReadOpaqueVarInt();
+        if (!senderGroupId.SequenceEqual(Context.GroupId))
+        {
+            throw new CryptographicException("Application message group_id does not match the current group.");
+        }
+
+        ulong epoch = rPeek.ReadUInt64BigEndian();
+        if (epoch != Context.Epoch)
+        {
+            throw new CryptographicException(
+                $"Application message epoch {epoch} does not match the current epoch {Context.Epoch}.");
+        }
+
+        uint senderLeaf = rPeek.ReadUInt32BigEndian();
+        if (senderLeaf != PeerLeafIndex)
+        {
+            throw new CryptographicException(
+                $"Application message claims to be from leaf {senderLeaf}, but expected peer leaf {PeerLeafIndex}.");
+        }
+
+        uint generation = rPeek.ReadUInt32BigEndian();
+        if (generation <= _highestSeenInboundGeneration)
+        {
+            throw new CryptographicException(
+                $"Replay rejected: generation {generation} ≤ already-seen {_highestSeenInboundGeneration}.");
+        }
+
+        var ratchet = GetOrCreateInboundRatchet();
+        var (key, nonce) = ratchet.KeyForGeneration(generation);
+        try
+        {
+            var msg = ApplicationMessageCodec.Decode(mlsMessageBytes, key, nonce);
+            _highestSeenInboundGeneration = generation;
+            return msg;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+            CryptographicOperations.ZeroMemory(nonce);
+        }
+    }
+
+    /// <summary>
     /// Founder bootstrap. Creates a new group with the founder as the
     /// sole member at epoch 0, then immediately rolls the key schedule
     /// forward so <see cref="Secrets"/> describes epoch 0.
