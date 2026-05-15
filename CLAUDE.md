@@ -422,6 +422,13 @@ they're load-bearing for every NIP that builds or parses events.
 - CI: `.github/workflows/ci.yml` (matrix on ubuntu/windows/macos +
   AOT smoke). Each runner installs Rust via `dtolnay/rust-toolchain@stable`
   and caches cargo registry + target dir.
+- Docs site: `.github/workflows/docs.yml` builds a DocFX site from XML
+  doc comments + the `docs/` markdown content and deploys to GitHub
+  Pages on every push to main. Site lives at
+  https://galaxoid-labs.github.io/NostrNet/. Local preview:
+  `dotnet tool install -g docfx`, then `cp logo.png docs/images/`,
+  then `docfx docs/docfx.json --serve`. Generated `docs/api/*.yml` and
+  `docs/_site/` are gitignored.
 - Release: `release.yml` (v* tags → `.nupkg` files attached to a
   GitHub release AND pushed to nuget.org via `NUGET_API_KEY` secret).
   The Native package is multi-RID: the workflow cross-compiles six

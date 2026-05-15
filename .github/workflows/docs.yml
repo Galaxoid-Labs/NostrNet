@@ -1,0 +1,108 @@
+name: Docs
+
+# Build the DocFX site and deploy to GitHub Pages on every push to
+# main. The site is also publishable manually via workflow_dispatch.
+#
+# Repo prerequisites (one-time):
+#   1. Settings → Pages → Source = "GitHub Actions".
+#   2. The first successful run of this workflow claims the
+#      https://galaxoid-labs.github.io/NostrNet/ URL.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Pages deploys are serialised by GitHub; cancel-in-progress=false so a
+# fast follow-up commit doesn't kill an in-flight deploy of the
+# previous one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # DocFX uses git history for "Edit this page" links
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      # NostrNet.Marmot.Mls.Native's csproj invokes `cargo build` from
+      # its CargoBuild target during restore. Even DocFX's metadata
+      # step triggers that target, so Rust must be on PATH.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: nuget-docs-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            nuget-docs-
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nostrnet-marmot-native/target
+          key: cargo-docs-${{ hashFiles('nostrnet-marmot-native/Cargo.lock') }}
+          restore-keys: |
+            cargo-docs-
+
+      - name: Install DocFX
+        run: dotnet tool install -g docfx
+
+      - name: Restore
+        run: dotnet restore
+
+      # Build once to produce the XML doc files DocFX reads. Release
+      # config matches what consumers see and keeps the deterministic
+      # build flag on.
+      - name: Build (generates XML doc files)
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Stage logo for the site
+        run: |
+          mkdir -p docs/images
+          cp logo.png docs/images/logo.png
+
+      - name: Run DocFX
+        run: docfx docs/docfx.json --warningsAsErrors
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_site
+
+  deploy:
+    name: Deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
