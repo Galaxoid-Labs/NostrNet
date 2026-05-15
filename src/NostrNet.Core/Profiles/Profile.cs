@@ -69,8 +69,18 @@ public sealed record Profile
     public string? Website { get; init; }
 
     /// <summary>
+    /// NIP-39 external-identity claims. Sourced from the kind-0
+    /// event's <c>i</c> tags (NOT from the content JSON). Malformed
+    /// <c>i</c> tags are silently skipped.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<ExternalIdentity> ExternalIdentities { get; init; } = Array.Empty<ExternalIdentity>();
+
+    /// <summary>
     /// Parses a kind-0 metadata event into a <see cref="Profile"/>. The
-    /// resulting profile's <see cref="Owner"/> is the event's pubkey.
+    /// resulting profile's <see cref="Owner"/> is the event's pubkey,
+    /// and <see cref="ExternalIdentities"/> is populated from any
+    /// NIP-39 <c>i</c> tags.
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="kind0Event"/> is not kind 0.</exception>
     /// <exception cref="FormatException">The event's content is not a JSON object.</exception>
@@ -95,7 +105,20 @@ public sealed record Profile
             throw new FormatException("Kind-0 event content is not a valid JSON object.", ex);
         }
 
-        return parsed with { Owner = kind0Event.PubKey };
+        // Pull NIP-39 `i` tags out of the event's tag list.
+        var identities = new List<ExternalIdentity>();
+        foreach (var tag in kind0Event.Tags)
+        {
+            if (tag.Count >= 3
+                && string.Equals(tag[0], "i", StringComparison.Ordinal)
+                && ExternalIdentity.TryParse(tag, out var ident)
+                && ident is not null)
+            {
+                identities.Add(ident);
+            }
+        }
+
+        return parsed with { Owner = kind0Event.PubKey, ExternalIdentities = identities };
     }
 
     /// <summary>

@@ -91,6 +91,7 @@ without either.
 | 23 | long-form articles & drafts (30023/30024) | Core/Articles/ |
 | 25 | reactions (kind 7) with custom-emoji support | Core/Reactions/ |
 | 38 | user statuses (kind 30315, parameterized replaceable by type) | Core/UserStatuses/ |
+| 39 | external identity claims (`i` tags on kind-0 profile) | Core/Profiles/ExternalIdentity.cs |
 | 42 | client-relay AUTH (challenge capture + auth event + send) | Core/Auth/ + Relay |
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
 | 50 | full-text search (filter `search` field + capability check) | Relay/Filter.cs + Relay/RelayInformation.cs |
