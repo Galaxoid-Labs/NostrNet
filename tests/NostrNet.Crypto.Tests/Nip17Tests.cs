@@ -137,6 +137,137 @@ public class Nip17Tests
     }
 
     [Fact]
+    public void CreateDirectMessage_WithReplyTo_AddsNip10ReplyMarker()
+    {
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        var parent = Nip17.CreateDirectMessage("first", alice, bob.PublicKey);
+        var parentRumor = Nip17.Unwrap(parent.ToRecipient, bob);
+
+        var dm = Nip17.CreateDirectMessage(
+            "yes!",
+            senderPrivateKey: bob,
+            recipientPublicKey: alice.PublicKey,
+            replyTo: parentRumor.RumorId);
+
+        var unwrapped = Nip17.Unwrap(dm.ToRecipient, alice);
+
+        // Reply tag should be present with NIP-10 "reply" marker pointing at the parent rumor id.
+        var replyTag = unwrapped.Tags.FirstOrDefault(t =>
+            t.Count >= 4 && t[0] == "e" && t[3] == "reply");
+        Assert.NotNull(replyTag);
+        Assert.Equal(parentRumor.RumorId.ToHex(), replyTag[1]);
+        Assert.Equal(string.Empty, replyTag[2]);
+
+        // No "root" tag emitted when only replyTo is supplied.
+        Assert.DoesNotContain(unwrapped.Tags, t => t.Count >= 4 && t[0] == "e" && t[3] == "root");
+    }
+
+    [Fact]
+    public void CreateDirectMessage_WithReplyAndRoot_EmitsBothMarkers()
+    {
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        var rootDm = Nip17.CreateDirectMessage("the root", alice, bob.PublicKey);
+        var root = Nip17.Unwrap(rootDm.ToRecipient, bob);
+
+        // Simulate a parent that's one level down from root (we don't actually
+        // need to construct one — just use a different EventId).
+        using var someOther = PrivateKey.Generate();
+        var fakeParent = Nip17.Unwrap(
+            Nip17.CreateDirectMessage("middle", someOther, bob.PublicKey).ToRecipient, bob);
+
+        var deep = Nip17.CreateDirectMessage(
+            "deep reply",
+            senderPrivateKey: bob,
+            recipientPublicKey: alice.PublicKey,
+            replyTo: fakeParent.RumorId,
+            replyRoot: root.RumorId);
+
+        var unwrapped = Nip17.Unwrap(deep.ToRecipient, alice);
+
+        var rootTag = unwrapped.Tags.FirstOrDefault(t =>
+            t.Count >= 4 && t[0] == "e" && t[3] == "root");
+        var replyTag = unwrapped.Tags.FirstOrDefault(t =>
+            t.Count >= 4 && t[0] == "e" && t[3] == "reply");
+
+        Assert.NotNull(rootTag);
+        Assert.NotNull(replyTag);
+        Assert.Equal(root.RumorId.ToHex(), rootTag[1]);
+        Assert.Equal(fakeParent.RumorId.ToHex(), replyTag[1]);
+    }
+
+    [Fact]
+    public void CreateReaction_ProducesKind7RumorWithEAndPTags()
+    {
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        var dm = Nip17.CreateDirectMessage("a note worth reacting to", alice, bob.PublicKey);
+        var asBob = Nip17.Unwrap(dm.ToRecipient, bob);
+
+        var reactionDm = Nip17.CreateReaction(
+            reaction: "👍",
+            targetRumorId: asBob.RumorId,
+            targetAuthor: alice.PublicKey,
+            senderPrivateKey: bob);
+
+        var asAlice = Nip17.Unwrap(reactionDm.ToRecipient, alice);
+
+        Assert.Equal(Nip17.ReactionRumorKind, asAlice.Kind);
+        Assert.Equal("👍", asAlice.Plaintext);
+        Assert.Contains(asAlice.Tags, t => t.Count >= 2 && t[0] == "e" && t[1] == asBob.RumorId.ToHex());
+        Assert.Contains(asAlice.Tags, t => t.Count >= 2 && t[0] == "p" && t[1] == alice.PublicKey.ToHex());
+        Assert.Equal(bob.PublicKey, asAlice.Sender);
+    }
+
+    [Fact]
+    public void Unwrap_RejectsRumorOutsideDmFamily()
+    {
+        // Wrap a kind-444 (Marmot Welcome) rumor and confirm Nip17.Unwrap
+        // refuses to surface it — this is what keeps stray Marmot welcomes
+        // out of SubscribeDirectMessagesAsync.
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        var dm = Nip17.WrapRumor(
+            kind: 444,
+            content: "pretend-welcome",
+            tags: Array.Empty<IReadOnlyList<string>>(),
+            senderPrivateKey: alice,
+            recipientPublicKey: bob.PublicKey);
+
+        var ex = Assert.Throws<CryptographicException>(() => Nip17.Unwrap(dm.ToRecipient, bob));
+        Assert.Contains("444", ex.Message);
+    }
+
+    [Fact]
+    public void WrapRumor_PreservesArbitraryKindAndTags()
+    {
+        // Kind 15 (file message) is in the DM family and should roundtrip cleanly.
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        var dm = Nip17.WrapRumor(
+            kind: Nip17.FileRumorKind,
+            content: "https://example.com/photo.jpg",
+            tags: new IReadOnlyList<string>[]
+            {
+                new[] { "p", bob.PublicKey.ToHex() },
+                new[] { "file-type", "image/jpeg" },
+            },
+            senderPrivateKey: alice,
+            recipientPublicKey: bob.PublicKey);
+
+        var unwrapped = Nip17.Unwrap(dm.ToRecipient, bob);
+        Assert.Equal(Nip17.FileRumorKind, unwrapped.Kind);
+        Assert.Equal("https://example.com/photo.jpg", unwrapped.Plaintext);
+        Assert.Contains(unwrapped.Tags, t => t.Count >= 2 && t[0] == "file-type" && t[1] == "image/jpeg");
+    }
+
+    [Fact]
     public void RoundTrip_LongMessage()
     {
         using var alice = PrivateKey.Generate();

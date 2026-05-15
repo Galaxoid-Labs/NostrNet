@@ -701,30 +701,87 @@ foreach (var (uri, r) in results.ToRecipient)
 foreach (var (uri, r) in results.ToSelf)
     Console.WriteLine($"self-copy {uri}: {(r.Accepted ? "OK" : r.Message)}");
 
-// Receive — gift wraps unwrap automatically. `dm.Relay` tells you which
-// relay carried this delivery (handy for multi-relay setups).
+// Receive — gift wraps unwrap automatically. `dm.Kind` distinguishes chat
+// (14), file (15), and reactions (7); `dm.RumorId` is what you reference
+// in replies and reactions. `dm.Relay` tells you which relay carried this
+// delivery.
 await foreach (var dm in client.SubscribeDirectMessagesAsync())
 {
-    if (dm.Sender.Equals(key.PublicKey))
+    bool mine = dm.Sender.Equals(key.PublicKey);
+    switch (dm.Kind)
     {
-        // This is one of MY sent messages, surfacing via the self-wrap
-        // for cross-device history. The actual recipient is in dm.Tags.
-        Console.WriteLine($"[sent]    {dm.Plaintext}");
-    }
-    else
-    {
-        Console.WriteLine($"[from {dm.Sender.ToNpub()[..16]}…] {dm.Plaintext}");
+        case Nip17.RumorKind:                                          // kind 14 chat
+            Console.WriteLine($"{(mine ? "[sent]" : $"[{dm.Sender.ToNpub()[..16]}…]")} {dm.Plaintext}");
+            break;
+        case Nip17.ReactionRumorKind:                                  // kind 7 reaction
+            string targetId = dm.Tags.FirstValue("e") ?? "?";
+            Console.WriteLine($"{dm.Sender.ToNpub()[..16]}… reacted {dm.Plaintext} to {targetId[..16]}…");
+            break;
     }
 }
 ```
 
-Under the hood: `NostrNet.Crypto.Nip17.CreateDirectMessage` builds a rumor
-(kind 14) → seal (kind 13, signed by sender) → two kind-1059 gift wraps
-(one addressed to the recipient, one to the sender — both wrapping the
-same inner rumor, so cross-device history reconciles by rumor id).
-Recipients verify the seal's signature and the rumor's pubkey before the
-plaintext is surfaced, so a malicious outer wrap can't spoof
-`dm.Sender`.
+#### Replying to a DM (NIP-10 markers, inside the wrap)
+
+```csharp
+// I want to reply to a message bob sent me earlier.
+var parentRumorId = previousDm.RumorId;   // from the UnwrappedDirectMessage
+
+await client.SendDirectMessageAsync(
+    recipient: bob,
+    content: "yes!",
+    replyTo: parentRumorId);   // adds ["e", id, "", "reply"] inside the rumor
+```
+
+For deeper threads, pass both `replyTo` (the immediate parent) and `replyRoot`
+(the thread's first message). Top-level replies omit `replyRoot`. The `e` tag
+points at the **inner rumor id**, not the kind-1059 gift wrap — only DM
+participants know that id, so threading stays as private as the messages.
+
+#### Reacting to a DM (NIP-25 wrapped, never in the clear)
+
+A clear kind-7 reaction would leak the conversation's existence (everyone
+sees "alice reacted to <some private id>"). So reactions to DMs go through
+the same NIP-59 wrap pipeline:
+
+```csharp
+await client.SendDirectMessageReactionAsync(
+    targetRumorId: receivedDm.RumorId,
+    targetAuthor: receivedDm.Sender,
+    reaction: "👍");        // or "+" / "-" / a :shortcode:
+```
+
+The receiver sees the reaction arrive on the same `SubscribeDirectMessagesAsync`
+stream, with `dm.Kind == Nip17.ReactionRumorKind`. Switch on it to render
+a reaction badge on the referenced message instead of as a new chat row.
+
+#### Low-level: arbitrary rumor kinds
+
+For file messages (kind 15) or app-specific rumor kinds — typing indicators,
+edits, read receipts — drop down to `SendWrappedDmAsync`:
+
+```csharp
+await client.SendWrappedDmAsync(
+    recipient: bob,
+    kind: Nip17.FileRumorKind,
+    content: "https://blossom.example/abc...def.jpg",
+    tags: new IReadOnlyList<string>[]
+    {
+        new[] { "p", bob.ToHex() },
+        new[] { "file-type", "image/jpeg" },
+    });
+```
+
+`SubscribeDirectMessagesAsync` surfaces DM-family kinds only (chat / file /
+reaction). Stray non-DM-family wraps — e.g. Marmot kind-444 Welcomes that
+share the same outer kind 1059 — are silently filtered out at unwrap time
+so they don't pollute the DM stream.
+
+Under the hood: `Nip17.CreateDirectMessage` / `CreateReaction` / `WrapRumor`
+all build a rumor → seal (signed by sender) → two kind-1059 gift wraps
+(recipient-addressed and self-addressed, same inner rumor). Recipients
+verify the seal's signature and the rumor's pubkey before the plaintext
+is surfaced, so a malicious outer wrap can't spoof `dm.Sender`.
 
 ### Legacy NIP-04 DMs (decode only)
 

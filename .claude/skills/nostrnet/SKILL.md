@@ -321,37 +321,93 @@ var meProfile = await store.GetAsync<Profile>(key.PublicKey);
 
 ## NIP-17 direct messages
 
+`SendDirectMessageAsync` handles the full rumor → seal → gift-wrap chain
+and publishes both the recipient-addressed and sender-addressed wraps
+(per the spec, the self-wrap is what lets the sender's other devices
+reconstruct sent-message history). Returns `Nip17PublishResult` with
+per-relay outcomes for each wrap.
+
 ```csharp
 var bob = PublicKey.FromNpub("npub1...");
-
-// Send — publishes TWO gift wraps per the spec: one for bob, one for me.
-// Returns Nip17PublishResult(ToRecipient, ToSelf) with per-relay outcomes
-// for each. The recipient wrap is delivery; the self-wrap is what lets
-// the sender's other devices reconstruct sent-message history by
-// subscribing to their own inbox.
 var results = await client.SendDirectMessageAsync(bob, "hey bob");
 
-// Receive — gift wraps unwrap automatically. `dm.Relay` exposes which
-// relay carried this delivery.
+// Receive — `dm.Kind` distinguishes chat / file / reaction;
+// `dm.RumorId` is what to reference in replies and reactions.
 await foreach (var dm in client.SubscribeDirectMessagesAsync())
 {
-    if (dm.Sender.Equals(key.PublicKey))
-        Console.WriteLine($"[sent]    {dm.Plaintext}");   // surfaced via the self-wrap
-    else
-        Console.WriteLine($"[inbound] {dm.Sender.ToNpub()}: {dm.Plaintext}");
+    bool mine = dm.Sender.Equals(key.PublicKey);
+    switch (dm.Kind)
+    {
+        case Nip17.RumorKind:                  // 14 — chat message
+            Render(dm.Plaintext, mine);
+            break;
+        case Nip17.ReactionRumorKind:          // 7 — reaction (NIP-25 inside the wrap)
+            string targetId = dm.Tags.FirstValue("e") ?? "";
+            RenderReaction(dm.Sender, dm.Plaintext, targetId);
+            break;
+    }
 }
 ```
 
-Important: subscribers to `SubscribeDirectMessagesAsync` **see their own
-sent DMs in the stream** because the self-wrap is addressed to them.
-Distinguish via `dm.Sender == myKey.PublicKey`. The actual recipient is
-in `dm.Tags` (the inner rumor's `p` value).
+`UnwrappedDirectMessage` carries `RumorId`, `Kind`, `Sender`, `Plaintext`,
+`CreatedAt`, `Tags`, and `Relay`. Subscribers see **their own sent DMs
+in the stream** (the self-wrap is addressed to them) — distinguish via
+`dm.Sender == myKey.PublicKey`.
 
-Under the hood the rumor → seal chain is built once, then wrapped twice:
-once with an outer ECDH key derived from the recipient's pubkey, once
-with one derived from the sender's own. Both wraps carry the same inner
-rumor id so cross-device reconciliation is trivial. The **seal
-signature is re-verified on unwrap**, so the surfaced `Sender` can't be
+### Replying (NIP-10 markers, inside the wrap)
+
+```csharp
+await client.SendDirectMessageAsync(
+    recipient: bob,
+    content: "yes!",
+    replyTo: parentDm.RumorId);              // → ["e", id, "", "reply"]
+// For deeper threads: also pass `replyRoot: threadRootId` → ["e", id, "", "root"]
+```
+
+The `e` tag points at the **inner rumor id**, not the kind-1059 gift wrap.
+Only DM participants know that id, so threading stays as private as the
+messages. Markers only — the library doesn't emit legacy positional `e`
+tags.
+
+### Reacting (NIP-25 wrapped, never in the clear)
+
+A clear kind-7 reaction would leak the conversation's existence. So
+reactions go through the same wrap pipeline:
+
+```csharp
+await client.SendDirectMessageReactionAsync(
+    targetRumorId: receivedDm.RumorId,
+    targetAuthor: receivedDm.Sender,
+    reaction: "👍");                          // or "+", "-", a :shortcode:
+```
+
+The receiver sees `dm.Kind == 7` arriving on the same stream — switch on
+kind in the consumer.
+
+### Low-level: arbitrary rumor kinds
+
+For file messages (kind 15), edits, typing indicators, read receipts, or
+any app-specific rumor kind:
+
+```csharp
+await client.SendWrappedDmAsync(
+    recipient: bob,
+    kind: Nip17.FileRumorKind,
+    content: "https://blossom.example/abc...def.jpg",
+    tags: new IReadOnlyList<string>[]
+    {
+        new[] { "p", bob.ToHex() },
+        new[] { "file-type", "image/jpeg" },
+    });
+```
+
+`SubscribeDirectMessagesAsync` surfaces only DM-family kinds (chat 14 /
+file 15 / reaction 7) — non-family wraps like Marmot's kind-444 Welcomes
+are filtered out at unwrap time so they don't pollute the DM stream. If
+you need full kind flexibility on receive, drop down to
+`Nip59.Unwrap(giftWrap, recipientKey)` directly.
+
+The **seal signature is re-verified on unwrap**, so `dm.Sender` can't be
 spoofed by a malicious outer wrap.
 
 ### Legacy NIP-04 DMs (decode only)

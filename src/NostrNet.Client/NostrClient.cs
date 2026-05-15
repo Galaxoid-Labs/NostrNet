@@ -742,6 +742,19 @@ public sealed class NostrClient : IAsyncDisposable
     /// <c>dm.Sender == client.PublicKey</c>.
     /// </para>
     /// </remarks>
+    /// <param name="recipient">The recipient's x-only public key.</param>
+    /// <param name="content">The plaintext message body (kind-14 chat rumor content).</param>
+    /// <param name="replyTo">
+    /// Optional — the inner-rumor id of the message being replied to. Adds an
+    /// <c>["e", id, "", "reply"]</c> NIP-10 marker tag to the rumor.
+    /// </param>
+    /// <param name="replyRoot">
+    /// Optional — the inner-rumor id of the thread root, for replies that aren't
+    /// to the root itself. Adds <c>["e", id, "", "root"]</c>. Omit when the
+    /// parent is the root.
+    /// </param>
+    /// <param name="additionalTags">Optional extra rumor tags (mentions, NIP-40 expiration, etc.).</param>
+    /// <param name="cancellationToken">Cancels the in-flight publishes.</param>
     /// <returns>
     /// Per-relay outcomes for both publishes. <see cref="Nip17PublishResult.ToRecipient"/>
     /// is the load-bearing one (delivery to the peer); failures on
@@ -752,6 +765,9 @@ public sealed class NostrClient : IAsyncDisposable
     public async Task<Nip17PublishResult> SendDirectMessageAsync(
         PublicKey recipient,
         string content,
+        EventId? replyTo = null,
+        EventId? replyRoot = null,
+        IReadOnlyList<IReadOnlyList<string>>? additionalTags = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(recipient);
@@ -759,8 +775,85 @@ public sealed class NostrClient : IAsyncDisposable
         EnsureNotDisposed();
         var key = RequireKey(nameof(SendDirectMessageAsync));
 
-        Nip17DirectMessage pair = Nip17.CreateDirectMessage(content, key, recipient);
+        Nip17DirectMessage pair = Nip17.CreateDirectMessage(
+            content, key, recipient,
+            replyTo: replyTo,
+            replyRoot: replyRoot,
+            additionalTags: additionalTags);
 
+        return await PublishDmPairAsync(pair, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Sends a NIP-25 reaction to a DM (kind 7 wrapped in a NIP-17 gift wrap).
+    /// Reacting in the clear would leak the existence of the conversation, so
+    /// reactions are wrapped exactly like chat messages — recipient is the
+    /// author of the message being reacted to.
+    /// </summary>
+    /// <param name="targetRumorId">The inner rumor id of the DM being reacted to.</param>
+    /// <param name="targetAuthor">The author of that DM (also the wrap recipient).</param>
+    /// <param name="reaction">
+    /// Per NIP-25: <c>"+"</c> (like, default), <c>"-"</c> (dislike), a Unicode emoji,
+    /// or a <c>:shortcode:</c> reference (caller must add the matching <c>emoji</c>
+    /// tag via <paramref name="additionalTags"/> in that case).
+    /// </param>
+    /// <param name="additionalTags">Optional extra tags (e.g. custom-emoji declaration).</param>
+    /// <param name="cancellationToken">Cancels the in-flight publishes.</param>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
+    public async Task<Nip17PublishResult> SendDirectMessageReactionAsync(
+        EventId targetRumorId,
+        PublicKey targetAuthor,
+        string reaction,
+        IReadOnlyList<IReadOnlyList<string>>? additionalTags = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(targetRumorId);
+        ArgumentNullException.ThrowIfNull(targetAuthor);
+        ArgumentNullException.ThrowIfNull(reaction);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(SendDirectMessageReactionAsync));
+
+        Nip17DirectMessage pair = Nip17.CreateReaction(
+            reaction, targetRumorId, targetAuthor, key,
+            additionalTags: additionalTags);
+
+        return await PublishDmPairAsync(pair, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Low-level: wrap and publish an arbitrary rumor as a NIP-17-shaped DM.
+    /// Use for file messages (kind 15), edits, typing indicators, or any
+    /// app-specific rumor kind. <see cref="SubscribeDirectMessagesAsync"/>
+    /// only surfaces DM-family kinds (chat 14 / file 15 / reaction 7); for
+    /// other kinds, consumers must use <see cref="Nip59.Unwrap"/> directly.
+    /// </summary>
+    /// <param name="recipient">The wrap recipient's x-only public key.</param>
+    /// <param name="kind">The inner rumor kind.</param>
+    /// <param name="content">The inner rumor content (UTF-8).</param>
+    /// <param name="tags">The inner rumor's tags. Caller is responsible for any required <c>p</c> tag.</param>
+    /// <param name="cancellationToken">Cancels the in-flight publishes.</param>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
+    public async Task<Nip17PublishResult> SendWrappedDmAsync(
+        PublicKey recipient,
+        int kind,
+        string content,
+        IReadOnlyList<IReadOnlyList<string>> tags,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(recipient);
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentNullException.ThrowIfNull(tags);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(SendWrappedDmAsync));
+
+        Nip17DirectMessage pair = Nip17.WrapRumor(kind, content, tags, key, recipient);
+        return await PublishDmPairAsync(pair, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Nip17PublishResult> PublishDmPairAsync(
+        Nip17DirectMessage pair,
+        CancellationToken cancellationToken)
+    {
         // Publish in parallel — the two wraps are independent.
         var toRecipientTask = _pool.PublishAsync(pair.ToRecipient, cancellationToken);
         var toSelfTask = _pool.PublishAsync(pair.ToSelf, cancellationToken);
