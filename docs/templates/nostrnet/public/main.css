@@ -1,0 +1,8 @@
+/* Constrain the navbar brand logo. The default modern template
+   shows _appLogoPath at its native size, which overflows for any
+   image bigger than the navbar height (~50px). */
+.navbar-brand img {
+  height: 32px;
+  width: auto;
+  max-width: 200px;
+}

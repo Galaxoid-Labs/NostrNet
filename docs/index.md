@@ -30,13 +30,13 @@ await client.PostNoteAsync("Hello, Nostr!");
 
 | Package | What it is |
 |---------|------------|
-| **NostrNet.Core** | Keys, events, NIP-01, NIP-19 bech32, profiles, articles, threading, reactions |
-| **NostrNet.Crypto** | ChaCha20, NIP-44 v2, NIP-17 DMs, NIP-59 gift wrap, NIP-51 lists |
-| **NostrNet.Relay** | WebSocket relay client, RelayPool, NIP-11 info, NIP-05 verification |
-| **NostrNet.Client** | High-level `NostrClient` façade — pool + key + helpers |
-| **NostrNet.Blossom** | Blossom content-addressed media (BUDs 00–12) + NIP-B7 user servers |
-| **NostrNet.Marmot** | Marmot MLS-over-Nostr envelopes + chat helpers (kinds 443/444/445) |
-| **NostrNet.Marmot.Mls.Native** | OpenMLS provider via in-tree Rust FFI bridge |
+| [**NostrNet.Core**](https://github.com/Galaxoid-Labs/NostrNet/tree/main/src/NostrNet.Core) | Keys, events, NIP-01, NIP-19 bech32, profiles, articles, threading, reactions |
+| [**NostrNet.Crypto**](https://github.com/Galaxoid-Labs/NostrNet/tree/main/src/NostrNet.Crypto) | ChaCha20, NIP-44 v2, NIP-17 DMs, NIP-59 gift wrap, NIP-51 lists |
+| [**NostrNet.Relay**](https://github.com/Galaxoid-Labs/NostrNet/tree/main/src/NostrNet.Relay) | WebSocket relay client, RelayPool, NIP-11 info, NIP-05 verification |
+| [**NostrNet.Client**](https://github.com/Galaxoid-Labs/NostrNet/tree/main/src/NostrNet.Client) | High-level `NostrClient` façade — pool + key + helpers |
+| [**NostrNet.Blossom**](https://github.com/Galaxoid-Labs/NostrNet/tree/main/src/NostrNet.Blossom) | Blossom content-addressed media (BUDs 00–12) + NIP-B7 user servers |
+| [**NostrNet.Marmot**](https://github.com/Galaxoid-Labs/NostrNet/tree/main/src/NostrNet.Marmot) | Marmot MLS-over-Nostr envelopes + chat helpers (kinds 443/444/445) |
+| [**NostrNet.Marmot.Mls.Native**](https://github.com/Galaxoid-Labs/NostrNet/tree/main/src/NostrNet.Marmot.Mls.Native) | OpenMLS provider via in-tree Rust FFI bridge |
 
 ## Links
 

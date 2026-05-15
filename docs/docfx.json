@@ -47,7 +47,7 @@
       },
       "pdf": false
     },
-    "template": [ "default", "modern" ],
+    "template": [ "default", "modern", "templates/nostrnet" ],
     "postProcessors": [ "ExtractSearchIndex" ],
     "keepFileLink": false,
     "disableGitFeatures": false
