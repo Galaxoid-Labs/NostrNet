@@ -1116,6 +1116,95 @@ event claims, compare `ProofOfWork.Difficulty(ev)` directly.
 
 ---
 
+## Local event store
+
+By default `NostrClient` is stateless — each event from each relay flows
+through `SubscribeAsync` and back out to your code. You handle storage
+and dedup. Most apps eventually want the opposite: a single source of
+truth for "what events do I have" that the UI binds to, plus dedup
+across relays for free. `INostrEventStore` is that abstraction;
+`MemoryEventStore` is the built-in implementation.
+
+```csharp
+using NostrNet.Client;
+using NostrNet.Keys;
+using NostrNet.Relay;
+using NostrNet.Relay.Storage;
+
+using var key = PrivateKey.Generate();
+var store = new MemoryEventStore(capacity: 10_000);
+
+await using var client = await NostrClient.Builder(key)
+    .WithEventStore(store)                    // ← attach the store
+    .UseRelays("wss://relay.damus.io", "wss://nos.lol")
+    .ConnectAsync();
+
+// 1. Tell relays what to send you. Events flow into the store; you
+//    do NOT iterate this call — it's fire-and-forget.
+using var cts = new CancellationTokenSource();
+_ = client.AttachAsync(new[]
+{
+    new Filter { Kinds = new[] { 1 }, Authors = new[] { key.PublicKey.ToHex() } },
+}, cts.Token);
+
+// 2. Read from the store. ObserveAsync yields the current snapshot
+//    first (oldest-first), then keeps yielding as new matching
+//    events arrive — like SwiftData @Query / Realm live results.
+await foreach (var ev in store.ObserveAsync(
+    new Filter { Kinds = new[] { 1 } }, cts.Token))
+{
+    feedItems.Add(ev);    // UI auto-updates
+}
+
+// Or take a one-shot snapshot — completes after enumeration.
+await foreach (var ev in store.QueryAsync(new Filter { Kinds = new[] { 0 } }))
+    knownProfiles.Add(Profile.FromEvent(ev));
+
+// Direct lookup by id.
+NostrEvent? specific = await store.GetAsync(someEventId);
+```
+
+### What the store handles for you
+
+The interface contract — every implementation must honor these:
+
+| Concern | Behavior |
+|---|---|
+| **Dedup** | Same event id seen twice → `StoreResult.Duplicate`. Multi-relay delivery collapses to one stored copy. |
+| **NIP-01 replaceable** (kinds 0, 3, 10000–19999) | Keyed by `(kind, pubkey)`. Newer `created_at` replaces older (`StoreResult.Replaced`); older returns `Outdated`. |
+| **NIP-01 parameterized-replaceable** (30000–39999) | Keyed by `(kind, pubkey, d-tag)`. Same upsert semantics; different `d`-tags coexist. Missing `d` defaults to empty string per NIP-33. |
+| **NIP-09 deletion** | Kind-5 from the original author tombstones referenced event ids permanently. `a`-tag deletions evict the matching addressable but do NOT block newer republishes at the same address (per NIP-09). |
+| **NIP-40 expiration** | Events with an `expiration` tag in the past are rejected at store time and skipped at read time. |
+| **NIP-01 ephemeral** (20000–29999) | Fanned out to live `ObserveAsync` subscribers but not persisted — typing indicators and presence pings can't crowd out durable events. |
+
+### When to use which method
+
+| Method | Returns | Use for |
+|---|---|---|
+| `client.SubscribeAsync(filter)` | `IAsyncEnumerable<ReceivedEvent>` — raw relay stream (auto-deduped when a store is attached) | One-off reads, lightweight scripts, when you don't have / want a store |
+| `client.AttachAsync(filter)` | `Task` — fire-and-forget; events flow into the store | App-style usage: subscribe once, read from the store |
+| `store.QueryAsync(filter)` | `IAsyncEnumerable<NostrEvent>` — snapshot, completes after enumeration | "Give me the current list" — newest-first, honors `Filter.Limit` |
+| `store.ObserveAsync(filter)` | `IAsyncEnumerable<NostrEvent>` — live; emits snapshot then keeps yielding | UI data binding — gets initial values + live updates until cancelled |
+| `store.GetAsync(id)` | `ValueTask<NostrEvent?>` | Direct lookup by event id |
+
+The data flow with a store attached is one-way:
+
+```
+relays  →  AttachAsync  →  store  →  Observe / Query  →  UI
+                              ↑
+                       single source of truth
+```
+
+### Custom storage backends
+
+Implement `INostrEventStore` and pass it to `WithEventStore(...)`. The
+interface is intentionally small (`StoreAsync`, `GetAsync`, `QueryAsync`,
+`ObserveAsync`, `CountAsync`) so any backend works — SQLite via
+`Microsoft.Data.Sqlite`, LiteDB, Realm, in-process Redis, etc. A
+dedicated `NostrNet.Storage.Sqlite` package is on the roadmap.
+
+---
+
 ## Lower-level access
 
 ### Direct relay control

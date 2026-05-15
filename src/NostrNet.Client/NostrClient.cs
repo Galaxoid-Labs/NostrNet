@@ -7,6 +7,7 @@ using NostrNet.Events;
 using NostrNet.Keys;
 using NostrNet.Pictures;
 using NostrNet.Relay;
+using NostrNet.Relay.Storage;
 using NostrNet.Reposts;
 using NostrNet.UserStatuses;
 
@@ -54,17 +55,40 @@ public sealed class NostrClient : IAsyncDisposable
     private PrivateKey? _key;
     private readonly RelayPool _pool;
     private readonly bool _ownsPool;
+    private readonly INostrEventStore? _eventStore;
     private bool _autoAuth;
     private bool _disposed;
 
-    internal NostrClient(PrivateKey? key, RelayPool pool, bool ownsPool, bool autoAuth)
+    internal NostrClient(
+        PrivateKey? key,
+        RelayPool pool,
+        bool ownsPool,
+        bool autoAuth,
+        INostrEventStore? eventStore)
     {
         _key = key;
         _pool = pool;
         _ownsPool = ownsPool;
         _autoAuth = autoAuth;
+        _eventStore = eventStore;
         SyncAutoAuth();
     }
+
+    /// <summary>
+    /// The attached <see cref="INostrEventStore"/>, if one was configured
+    /// via <see cref="NostrClientBuilder.WithEventStore"/>; otherwise
+    /// <c>null</c>. When non-null:
+    /// <list type="bullet">
+    ///   <item><see cref="SubscribeAsync"/> auto-dedups using the store —
+    ///         events already known are not yielded a second time even when
+    ///         multiple relays deliver them.</item>
+    ///   <item>Prefer <see cref="AttachAsync"/> + the store's
+    ///         <c>QueryAsync</c> / <c>ObserveAsync</c> for UI feeds:
+    ///         events flow once into the store and the UI reads from
+    ///         there instead of iterating the raw stream.</item>
+    /// </list>
+    /// </summary>
+    public INostrEventStore? EventStore => _eventStore;
 
     /// <summary>
     /// Attaches a private key to this client. Allows graduating an anonymous
@@ -724,10 +748,23 @@ public sealed class NostrClient : IAsyncDisposable
     /// tagged with the relay that delivered it. Works without a key.
     /// </summary>
     /// <remarks>
-    /// When multiple relays carry the same event, each delivery is yielded
+    /// <para>
+    /// Without a configured event store: each relay delivery is yielded
     /// separately — the consumer decides whether to dedup. For a feed-style
     /// "each event once" experience, dedup on <c>received.Event.Id</c> in
-    /// the loop. For relay-coverage analysis, keep all occurrences.
+    /// the loop.
+    /// </para>
+    /// <para>
+    /// With a configured event store (<see cref="EventStore"/>): each
+    /// arriving event flows through <c>StoreAsync</c> first. Events
+    /// rejected as <see cref="StoreResult.Duplicate"/>,
+    /// <see cref="StoreResult.Outdated"/>, <see cref="StoreResult.Deleted"/>,
+    /// or <see cref="StoreResult.Expired"/> are not yielded — the
+    /// consumer only sees new, replaced, or ephemeral events. For UI
+    /// data binding, prefer <see cref="AttachAsync"/> +
+    /// <see cref="INostrEventStore.ObserveAsync"/> over iterating this
+    /// stream directly.
+    /// </para>
     /// </remarks>
     public async IAsyncEnumerable<ReceivedEvent> SubscribeAsync(
         IReadOnlyList<Filter> filters,
@@ -741,11 +778,98 @@ public sealed class NostrClient : IAsyncDisposable
         {
             if (msg is SubscriptionEventReceived received)
             {
+                if (_eventStore is not null)
+                {
+                    StoreResult outcome;
+                    try
+                    {
+                        outcome = await _eventStore.StoreAsync(received.Event, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        // Store failures must not poison the subscription stream.
+                        outcome = StoreResult.Stored;
+                    }
+
+                    if (outcome is StoreResult.Duplicate
+                        or StoreResult.Outdated
+                        or StoreResult.Deleted
+                        or StoreResult.Expired)
+                    {
+                        continue;
+                    }
+                }
+
                 yield return new ReceivedEvent(received.Event, received.Relay);
             }
             else if (msg is SubscriptionClosed)
             {
                 yield break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Opens a subscription whose events flow into the attached
+    /// <see cref="EventStore"/> rather than back to the caller. Read
+    /// the resulting data via <see cref="INostrEventStore.QueryAsync"/>
+    /// (snapshot) or <see cref="INostrEventStore.ObserveAsync"/> (live).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The returned <see cref="Task"/> completes when all relays close
+    /// the subscription or <paramref name="cancellationToken"/> fires.
+    /// Typical usage holds onto the cancellation token and lets the
+    /// task run for the lifetime of the screen / feature:
+    /// </para>
+    /// <code>
+    /// using var cts = new CancellationTokenSource();
+    /// _ = client.AttachAsync(new[] { feedFilter }, cts.Token);
+    ///
+    /// // UI binds to the store:
+    /// await foreach (var ev in store.ObserveAsync(uiFilter, cts.Token))
+    ///     feedItems.Add(ev);
+    /// </code>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">No event store is attached.</exception>
+    /// <exception cref="ArgumentNullException">When <paramref name="filters"/> is null.</exception>
+    public async Task AttachAsync(
+        IReadOnlyList<Filter> filters,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filters);
+        EnsureNotDisposed();
+        if (_eventStore is null)
+        {
+            throw new InvalidOperationException(
+                "AttachAsync requires an event store. Configure one via NostrClientBuilder.WithEventStore.");
+        }
+
+        string subscriptionId = "attach-" + Guid.NewGuid().ToString("N")[..16];
+        await foreach (var msg in _pool.SubscribeAsync(subscriptionId, filters, cancellationToken).ConfigureAwait(false))
+        {
+            if (msg is SubscriptionEventReceived received)
+            {
+                try
+                {
+                    await _eventStore.StoreAsync(received.Event, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // Store failures must not poison the subscription.
+                }
+            }
+            else if (msg is SubscriptionClosed)
+            {
+                break;
             }
         }
     }
@@ -860,6 +984,7 @@ public sealed class NostrClientBuilder
     private readonly PrivateKey? _key;
     private readonly List<Uri> _relays = new();
     private bool _autoAuth = true;
+    private INostrEventStore? _eventStore;
 
     internal NostrClientBuilder(PrivateKey? key)
     {
@@ -874,6 +999,22 @@ public sealed class NostrClientBuilder
     public NostrClientBuilder WithAutoAuth(bool enabled)
     {
         _autoAuth = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Attaches an <see cref="INostrEventStore"/>. When set, the client
+    /// auto-dedups on <see cref="NostrClient.SubscribeAsync"/> and enables
+    /// <see cref="NostrClient.AttachAsync"/> for fire-and-forget
+    /// subscriptions whose events flow into the store. UI code should
+    /// read from <c>store.QueryAsync</c> / <c>store.ObserveAsync</c>
+    /// instead of iterating the raw subscription stream.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">When <paramref name="store"/> is null.</exception>
+    public NostrClientBuilder WithEventStore(INostrEventStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        _eventStore = store;
         return this;
     }
 
@@ -909,7 +1050,7 @@ public sealed class NostrClientBuilder
         try
         {
             await pool.ConnectAsync(_relays, cancellationToken).ConfigureAwait(false);
-            return new NostrClient(_key, pool, ownsPool: true, _autoAuth);
+            return new NostrClient(_key, pool, ownsPool: true, _autoAuth, _eventStore);
         }
         catch
         {

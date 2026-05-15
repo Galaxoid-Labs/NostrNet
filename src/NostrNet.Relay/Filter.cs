@@ -65,6 +65,127 @@ public sealed record Filter
     /// </remarks>
     public string? Search { get; init; }
 
+    /// <summary>
+    /// Tests whether <paramref name="ev"/> satisfies this filter's selectors.
+    /// </summary>
+    /// <remarks>
+    /// Matches every populated clause per NIP-01: <see cref="Ids"/> and
+    /// <see cref="Authors"/> use hex-prefix matching (case-insensitive);
+    /// <see cref="Kinds"/> uses exact equality; <see cref="TagFilters"/>
+    /// requires at least one tag row whose name equals the filter key
+    /// (without the <c>#</c>) and whose first value is in the supplied list;
+    /// <see cref="Since"/> / <see cref="Until"/> are inclusive unix-seconds
+    /// bounds. <see cref="Search"/> is matched locally as a
+    /// case-insensitive substring against <see cref="NostrEvent.Content"/>
+    /// — relays may apply richer semantics; this method gives a
+    /// reasonable best-effort approximation for local stores.
+    /// <see cref="Limit"/> is NOT applied here — it is a query-level
+    /// concern applied after sorting.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="ev"/> is null.</exception>
+    public bool Matches(NostrEvent ev)
+    {
+        ArgumentNullException.ThrowIfNull(ev);
+
+        if (Kinds is { Count: > 0 } kinds && !kinds.Contains(ev.Kind))
+        {
+            return false;
+        }
+
+        if (Since is long since && ev.CreatedAt < since)
+        {
+            return false;
+        }
+
+        if (Until is long until && ev.CreatedAt > until)
+        {
+            return false;
+        }
+
+        if (Ids is { Count: > 0 } ids)
+        {
+            string idHex = ev.Id.ToHex();
+            bool any = false;
+            foreach (string prefix in ids)
+            {
+                if (idHex.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    any = true;
+                    break;
+                }
+            }
+
+            if (!any)
+            {
+                return false;
+            }
+        }
+
+        if (Authors is { Count: > 0 } authors)
+        {
+            string authorHex = ev.PubKey.ToHex();
+            bool any = false;
+            foreach (string prefix in authors)
+            {
+                if (authorHex.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    any = true;
+                    break;
+                }
+            }
+
+            if (!any)
+            {
+                return false;
+            }
+        }
+
+        if (TagFilters is { Count: > 0 } tagFilters)
+        {
+            foreach (var (name, values) in tagFilters)
+            {
+                if (values.Count == 0)
+                {
+                    continue;
+                }
+
+                bool found = false;
+                foreach (var row in ev.Tags)
+                {
+                    if (row.Count >= 2 && string.Equals(row[0], name, StringComparison.Ordinal))
+                    {
+                        for (int i = 0; i < values.Count; i++)
+                        {
+                            if (string.Equals(row[1], values[i], StringComparison.Ordinal))
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if (found)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                if (!found)
+                {
+                    return false;
+                }
+            }
+        }
+
+        if (!string.IsNullOrEmpty(Search) &&
+            ev.Content.IndexOf(Search, StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     /// <summary>Serializes the filter to its NIP-01 JSON representation.</summary>
     public string ToJson()
     {

@@ -15,7 +15,13 @@ src/
                                 NIP-59 gift wrap, NIP-51 lists. Uses Core's
                                 internal Secp256k1.
   NostrNet.Relay/               ClientWebSocket-based RelayClient, RelayPool,
-                                Filter, RelayInformation (NIP-11), Nip05.
+                                Filter (with local-side Matches() for stores),
+                                RelayInformation (NIP-11), Nip05. Includes
+                                Storage/ subnamespace: INostrEventStore +
+                                MemoryEventStore — local dedup, NIP-01
+                                replaceable / addressable upsert, NIP-09
+                                tombstones, NIP-40 expiration, NIP-01
+                                ephemeral fan-out.
   NostrNet.Client/              NostrClient façade — RelayPool + optional key + helpers.
   NostrNet.Blossom/             Blossom protocol — NIP-B7 user server list (kind
                                 10063) typed events + (future) HTTP client for
@@ -70,6 +76,18 @@ without either.
    provider (`NostrNet.Marmot.Mls.Reference`) was a stepping stone and is
    gone. Don't reintroduce a pure-managed MLS — channel proposals through
    `IMarmotMlsProvider` so OpenMLS does the work.
+8. **Storage is an interface, not a feature.** `INostrEventStore` lives
+   in `NostrNet.Relay/Storage/` next to `Filter` (which it depends on
+   for `Matches`). `MemoryEventStore` is the only in-tree impl.
+   `IMarmotMlsProvider`-style: future `NostrNet.Storage.Sqlite` etc. are
+   separate packages implementing the same interface. The interface
+   semantics (NIP-01 replaceable + addressable upsert, NIP-09
+   tombstones, NIP-40 expiration, NIP-01 ephemeral fan-out-but-no-persist)
+   are spec-level guarantees; don't add `MemoryEventStoreOptions`-style
+   knobs that diverge per-implementation. **`NostrClient.SubscribeAsync`
+   auto-dedups when a store is attached**; `AttachAsync` is the
+   fire-and-forget "fill the store" entry. The recommended app pattern
+   is `AttachAsync` to subscribe + `store.ObserveAsync` to read.
 
 ## NIPs implemented
 
