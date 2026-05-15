@@ -723,13 +723,33 @@ public sealed class NostrClient : IAsyncDisposable
 
     /// <summary>
     /// Sends a NIP-17 direct message to <paramref name="recipient"/>.
+    /// Publishes <em>two</em> gift wraps per the spec: one addressed to the
+    /// recipient (delivery), one addressed to the sender (so the sender's
+    /// other devices can reconstruct sent-message history by subscribing to
+    /// kind-1059 events with their own pubkey in the <c>p</c> tag).
     /// </summary>
     /// <remarks>
-    /// The plaintext is wrapped per NIP-17/NIP-59 (rumor → seal → gift wrap)
-    /// using the client's private key and an ephemeral key for the outer wrap.
+    /// <para>
+    /// Both wraps share the same inner rumor id, so cross-device
+    /// reconciliation is straightforward. Both are published to every relay
+    /// in the pool — this library does not currently route per NIP-65 inbox
+    /// lists, so configure the pool with whatever relays you want the DM to
+    /// land on for both parties.
+    /// </para>
+    /// <para>
+    /// Apps subscribing via <see cref="SubscribeDirectMessagesAsync"/> will
+    /// see their own sent messages arrive in the stream — distinguish via
+    /// <c>dm.Sender == client.PublicKey</c>.
+    /// </para>
     /// </remarks>
+    /// <returns>
+    /// Per-relay outcomes for both publishes. <see cref="Nip17PublishResult.ToRecipient"/>
+    /// is the load-bearing one (delivery to the peer); failures on
+    /// <see cref="Nip17PublishResult.ToSelf"/> only affect this sender's
+    /// own multi-device history sync.
+    /// </returns>
     /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
-    public async Task<IReadOnlyDictionary<Uri, PublishResult>> SendDirectMessageAsync(
+    public async Task<Nip17PublishResult> SendDirectMessageAsync(
         PublicKey recipient,
         string content,
         CancellationToken cancellationToken = default)
@@ -739,8 +759,16 @@ public sealed class NostrClient : IAsyncDisposable
         EnsureNotDisposed();
         var key = RequireKey(nameof(SendDirectMessageAsync));
 
-        NostrEvent giftWrap = Nip17.CreateDirectMessage(content, key, recipient);
-        return await _pool.PublishAsync(giftWrap, cancellationToken).ConfigureAwait(false);
+        Nip17DirectMessage pair = Nip17.CreateDirectMessage(content, key, recipient);
+
+        // Publish in parallel — the two wraps are independent.
+        var toRecipientTask = _pool.PublishAsync(pair.ToRecipient, cancellationToken);
+        var toSelfTask = _pool.PublishAsync(pair.ToSelf, cancellationToken);
+        await Task.WhenAll(toRecipientTask, toSelfTask).ConfigureAwait(false);
+
+        return new Nip17PublishResult(
+            ToRecipient: toRecipientTask.Result,
+            ToSelf: toSelfTask.Result);
     }
 
     /// <summary>
@@ -1018,6 +1046,17 @@ public sealed class NostrClient : IAsyncDisposable
         return _key;
     }
 }
+
+/// <summary>
+/// Per-relay outcomes from <see cref="NostrClient.SendDirectMessageAsync"/>.
+/// Carries results for both the recipient-addressed gift wrap (delivery)
+/// and the sender-addressed self-wrap (cross-device history).
+/// </summary>
+/// <param name="ToRecipient">Per-relay outcomes for the wrap addressed to the recipient.</param>
+/// <param name="ToSelf">Per-relay outcomes for the wrap addressed to the sender's own pubkey.</param>
+public sealed record Nip17PublishResult(
+    IReadOnlyDictionary<Uri, PublishResult> ToRecipient,
+    IReadOnlyDictionary<Uri, PublishResult> ToSelf);
 
 /// <summary>Fluent builder for <see cref="NostrClient"/>.</summary>
 public sealed class NostrClientBuilder

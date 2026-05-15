@@ -324,18 +324,35 @@ var meProfile = await store.GetAsync<Profile>(key.PublicKey);
 ```csharp
 var bob = PublicKey.FromNpub("npub1...");
 
-// Send
-await client.SendDirectMessageAsync(bob, "hey bob");
+// Send — publishes TWO gift wraps per the spec: one for bob, one for me.
+// Returns Nip17PublishResult(ToRecipient, ToSelf) with per-relay outcomes
+// for each. The recipient wrap is delivery; the self-wrap is what lets
+// the sender's other devices reconstruct sent-message history by
+// subscribing to their own inbox.
+var results = await client.SendDirectMessageAsync(bob, "hey bob");
 
 // Receive — gift wraps unwrap automatically. `dm.Relay` exposes which
-// relay carried this delivery (useful for multi-relay setups).
+// relay carried this delivery.
 await foreach (var dm in client.SubscribeDirectMessagesAsync())
-    Console.WriteLine($"[{dm.Relay?.Host}] {dm.Sender.ToNpub()}: {dm.Plaintext}");
+{
+    if (dm.Sender.Equals(key.PublicKey))
+        Console.WriteLine($"[sent]    {dm.Plaintext}");   // surfaced via the self-wrap
+    else
+        Console.WriteLine($"[inbound] {dm.Sender.ToNpub()}: {dm.Plaintext}");
+}
 ```
 
-Under the hood the rumor → seal → gift wrap chain is built and the
-**seal signature is re-verified on unwrap**, so the surfaced `Sender`
-can't be spoofed by a malicious outer wrap.
+Important: subscribers to `SubscribeDirectMessagesAsync` **see their own
+sent DMs in the stream** because the self-wrap is addressed to them.
+Distinguish via `dm.Sender == myKey.PublicKey`. The actual recipient is
+in `dm.Tags` (the inner rumor's `p` value).
+
+Under the hood the rumor → seal chain is built once, then wrapped twice:
+once with an outer ECDH key derived from the recipient's pubkey, once
+with one derived from the sender's own. Both wraps carry the same inner
+rumor id so cross-device reconciliation is trivial. The **seal
+signature is re-verified on unwrap**, so the surfaced `Sender` can't be
+spoofed by a malicious outer wrap.
 
 ### Legacy NIP-04 DMs (decode only)
 

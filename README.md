@@ -691,19 +691,40 @@ because the pump cancels with the caller.
 ```csharp
 var bob = PublicKey.FromNpub("npub1...");
 
-// Send
-await client.SendDirectMessageAsync(bob, "hey bob");
+// Send — publishes two gift wraps: one to bob, one to me. Returns per-relay
+// outcomes for both. The recipient wrap is the load-bearing one; the
+// self-wrap is what lets the sender's other devices reconstruct sent-
+// message history.
+var results = await client.SendDirectMessageAsync(bob, "hey bob");
+foreach (var (uri, r) in results.ToRecipient)
+    Console.WriteLine($"delivery  {uri}: {(r.Accepted ? "OK" : r.Message)}");
+foreach (var (uri, r) in results.ToSelf)
+    Console.WriteLine($"self-copy {uri}: {(r.Accepted ? "OK" : r.Message)}");
 
-// Receive — gift wraps are unwrapped automatically; `dm.Relay` tells you
-// which relay carried this delivery (handy for multi-relay setups).
+// Receive — gift wraps unwrap automatically. `dm.Relay` tells you which
+// relay carried this delivery (handy for multi-relay setups).
 await foreach (var dm in client.SubscribeDirectMessagesAsync())
-    Console.WriteLine($"[{dm.Relay?.Host}] {dm.Sender.ToNpub()}: {dm.Plaintext}");
+{
+    if (dm.Sender.Equals(key.PublicKey))
+    {
+        // This is one of MY sent messages, surfacing via the self-wrap
+        // for cross-device history. The actual recipient is in dm.Tags.
+        Console.WriteLine($"[sent]    {dm.Plaintext}");
+    }
+    else
+    {
+        Console.WriteLine($"[from {dm.Sender.ToNpub()[..16]}…] {dm.Plaintext}");
+    }
+}
 ```
 
 Under the hood: `NostrNet.Crypto.Nip17.CreateDirectMessage` builds a rumor
-(kind 14) → seal (kind 13, signed by sender) → gift wrap (kind 1059, signed
-by an ephemeral key, addressed by `p` tag). Recipient verifies the seal's
-signature and the rumor's pubkey before yielding the plaintext.
+(kind 14) → seal (kind 13, signed by sender) → two kind-1059 gift wraps
+(one addressed to the recipient, one to the sender — both wrapping the
+same inner rumor, so cross-device history reconciles by rumor id).
+Recipients verify the seal's signature and the rumor's pubkey before the
+plaintext is surfaced, so a malicious outer wrap can't spoof
+`dm.Sender`.
 
 ### Legacy NIP-04 DMs (decode only)
 

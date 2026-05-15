@@ -123,12 +123,20 @@ async Task<int> SendDmAsync(string[] argv)
 
     Console.WriteLine($"sending NIP-17 DM to {recipient.ToNpub()}...");
     var results = await client.SendDirectMessageAsync(recipient, text).ConfigureAwait(false);
-    foreach ((Uri uri, var r) in results)
+
+    Console.WriteLine("  to recipient:");
+    foreach ((Uri uri, var r) in results.ToRecipient)
     {
-        Console.WriteLine($"  {uri}: {(r.Accepted ? "OK" : "REJECTED")} {r.Message}");
+        Console.WriteLine($"    {uri}: {(r.Accepted ? "OK" : "REJECTED")} {r.Message}");
     }
 
-    return results.Values.Any(r => r.Accepted) ? 0 : 2;
+    Console.WriteLine("  to self (cross-device history):");
+    foreach ((Uri uri, var r) in results.ToSelf)
+    {
+        Console.WriteLine($"    {uri}: {(r.Accepted ? "OK" : "REJECTED")} {r.Message}");
+    }
+
+    return results.ToRecipient.Values.Any(r => r.Accepted) ? 0 : 2;
 }
 
 async Task<int> ListenFeedAsync(string[] argv)

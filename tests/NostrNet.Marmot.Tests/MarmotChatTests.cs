@@ -218,13 +218,13 @@ public class MarmotChatTests
         using var alice = PrivateKey.Generate();
         using var bob = PrivateKey.Generate();
 
-        var dmGiftWrap = NostrNet.Crypto.Nip17.CreateDirectMessage(
+        var dm = NostrNet.Crypto.Nip17.CreateDirectMessage(
             "regular nip-17 dm",
             senderPrivateKey: alice,
             recipientPublicKey: bob.PublicKey);
 
         var prov = new FakeProvider();
-        var result = await MarmotChat.TryAcceptInviteAsync(prov, bob, dmGiftWrap);
+        var result = await MarmotChat.TryAcceptInviteAsync(prov, bob, dm.ToRecipient);
         Assert.Null(result);
     }
 

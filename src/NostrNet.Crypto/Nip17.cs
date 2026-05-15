@@ -31,18 +31,34 @@ public static class Nip17
     public const int GiftWrapKind = Nip59.GiftWrapKind;
 
     /// <summary>
-    /// Creates a NIP-17 direct message: a kind-1059 gift wrap addressed to
-    /// the recipient. Publish the returned event to relays for delivery.
+    /// Creates a NIP-17 direct message: <em>two</em> kind-1059 gift wraps —
+    /// one addressed to the recipient, one addressed to the sender. Both
+    /// wrap the same inner rumor (identical rumor id) so a multi-device
+    /// sender can subscribe to its own inbox and recover sent-message
+    /// history without round-tripping through the recipient.
     /// </summary>
     /// <param name="plaintext">The UTF-8 message body.</param>
     /// <param name="senderPrivateKey">The sender's private key.</param>
     /// <param name="recipientPublicKey">The recipient's x-only public key.</param>
     /// <param name="createdAt">
     /// Optional real timestamp (unix seconds). If null, <see cref="DateTimeOffset.UtcNow"/>
-    /// is used. The seal and gift wrap each carry a jittered (backward) timestamp.
+    /// is used. The seals and gift wraps each carry independently jittered
+    /// (backward) timestamps.
     /// </param>
-    /// <returns>The signed gift-wrap event ready for publication.</returns>
-    public static NostrEvent CreateDirectMessage(
+    /// <returns>
+    /// Both signed gift-wrap events. Publish <see cref="Nip17DirectMessage.ToRecipient"/>
+    /// to the recipient's inbox and <see cref="Nip17DirectMessage.ToSelf"/>
+    /// to your own — typically the same relay set unless you're routing via
+    /// NIP-65 inbox lists.
+    /// </returns>
+    /// <remarks>
+    /// The two wraps use the same inner rumor and seal, so they decrypt to
+    /// identical content. They differ in outer encryption: the recipient's
+    /// wrap uses an ECDH key derived from <paramref name="recipientPublicKey"/>;
+    /// the sender's wrap uses one derived from the sender's own public key.
+    /// Each outer is signed by a fresh ephemeral key per NIP-59.
+    /// </remarks>
+    public static Nip17DirectMessage CreateDirectMessage(
         string plaintext,
         PrivateKey senderPrivateKey,
         PublicKey recipientPublicKey,
@@ -63,7 +79,9 @@ public static class Nip17
             },
             Content: plaintext);
 
-        return Nip59.Wrap(rumor, senderPrivateKey, recipientPublicKey);
+        return new Nip17DirectMessage(
+            ToRecipient: Nip59.Wrap(rumor, senderPrivateKey, recipientPublicKey),
+            ToSelf: Nip59.Wrap(rumor, senderPrivateKey, senderPrivateKey.PublicKey));
     }
 
     /// <summary>
@@ -91,6 +109,15 @@ public static class Nip17
             Tags: rumor.Tags);
     }
 }
+
+/// <summary>
+/// The pair of gift wraps produced by <see cref="Nip17.CreateDirectMessage"/>.
+/// Publish <see cref="ToRecipient"/> for delivery and <see cref="ToSelf"/>
+/// so the sender's other devices can reconstruct sent-message history.
+/// </summary>
+/// <param name="ToRecipient">The kind-1059 gift wrap addressed to the recipient.</param>
+/// <param name="ToSelf">The kind-1059 gift wrap addressed to the sender (same inner rumor as <see cref="ToRecipient"/>).</param>
+public sealed record Nip17DirectMessage(NostrEvent ToRecipient, NostrEvent ToSelf);
 
 /// <summary>
 /// The result of unwrapping a NIP-17 gift wrap.
