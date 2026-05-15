@@ -21,6 +21,66 @@ await using var client = await NostrClient.Builder(key)
 await client.PostNoteAsync("Hello, Nostr!");
 ```
 
+### A real-app sketch — store, attach, observe
+
+The recommended pattern for app-shaped usage: attach a local
+`MemoryEventStore`, fire-and-forget `AttachAsync` to feed it from
+relays, then bind your UI to live typed queries via
+`store.ObserveAsync<T>()`. One-way data flow, automatic dedup
+across relays, and SwiftData / Realm–style reactive UI updates.
+
+```csharp
+using NostrNet.Client;
+using NostrNet.Client.Storage;   // store.ObserveAsync<T> / QueryAsync<T> / GetAsync<T>
+using NostrNet.Keys;
+using NostrNet.Profiles;
+using NostrNet.Relay;
+using NostrNet.Relay.Storage;
+
+using var key = PrivateKey.Generate();
+var store = new MemoryEventStore();          // INostrEventStore — swap for SQLite later
+
+await using var client = await NostrClient.Builder(key)
+    .WithEventStore(store)
+    .UseRelays("wss://relay.damus.io", "wss://nos.lol")
+    .ConnectAsync();
+
+using var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { cts.Cancel(); e.Cancel = true; };
+
+// 1. Subscribe — events flow into the store. Fire-and-forget; no yield.
+_ = client.AttachAsync(new[]
+{
+    new Filter { Kinds = new[] { 0, 1 } },              // profiles + text notes
+    new Filter { Kinds = new[] { 30023 }, Limit = 50 },  // recent long-form articles
+}, cts.Token);
+
+// 2. Read typed values live — yields snapshot, then keeps yielding
+//    as new matches arrive. UI binds here, not to the relay stream.
+_ = Task.Run(async () =>
+{
+    await foreach (var profile in store.ObserveAsync<Profile>(cancellationToken: cts.Token))
+        Console.WriteLine($"profile: {profile.Owner!.ToNpub()[..16]}… — {profile.Name}");
+});
+
+_ = Task.Run(async () =>
+{
+    await foreach (var article in store.ObserveAsync<NostrNet.Articles.Article>(cancellationToken: cts.Token))
+        Console.WriteLine($"article: {article.Title} by {article.Author.ToNpub()[..16]}…");
+});
+
+// 3. Publish — same connection, same key.
+await client.PostNoteAsync("hello from a real app");
+
+// Idle until Ctrl+C; subscriptions and observers run in the background.
+try { await Task.Delay(Timeout.Infinite, cts.Token); }
+catch (OperationCanceledException) { }
+```
+
+The deeper "Local event store" section below covers the store's
+NIP-01 / NIP-09 / NIP-40 semantics, the full list of typed wrappers,
+and how to implement your own store backend.
+
 ## Supported NIPs
 
 | NIP | Feature |
