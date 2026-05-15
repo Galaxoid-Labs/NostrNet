@@ -44,6 +44,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets — public + NIP-44 self-encrypted private items |
 | [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap (used by NIP-17) |
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |
+| [98](https://github.com/nostr-protocol/nips/blob/master/98.md) | HTTP Auth — sign requests with kind-27235 + `Nip98AuthHandler` for `HttpClient` |
 | [68](https://github.com/nostr-protocol/nips/blob/master/68.md) | Picture-first feeds (kind 20, multi-image `imeta` attachments) |
 | [71](https://github.com/nostr-protocol/nips/blob/master/71.md) | Video events (kinds 21/22 regular + 34235/34236 addressable) |
 | [92](https://github.com/nostr-protocol/nips/blob/master/92.md) | Media attachments via `imeta` tag (shared parser/builder) |
