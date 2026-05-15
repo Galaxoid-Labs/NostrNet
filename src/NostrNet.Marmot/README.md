@@ -198,6 +198,49 @@ conversations rehydrated from storage where the 1:1 peer is
 ambiguous, it's `null`. Use the `MarmotStoredGroup.Members` list
 returned by `ListGroupsAsync` if you need the full membership.
 
+### Connection resilience (inherited from `NostrClient`)
+
+Marmot built via `UseRelays(...)` rides on a regular `NostrClient`,
+so it inherits the underlying transport-resilience defaults
+automatically:
+
+- **Auto-reconnect** is on. If a relay drops, the pool reconnects
+  with exponential backoff (1s → 30s cap).
+- **Auto-resubscribe** is on. The inbox pump (kind-1059 invites)
+  and every per-conversation pump (kind-445 group events)
+  transparently re-issue their REQ after a reconnect. A transient
+  WebSocket drop in the middle of a chat is invisible to the app —
+  messages keep flowing once the relay is back.
+
+For status indicators in chat UI (a green/yellow/red dot per relay):
+
+```csharp
+_ = Task.Run(async () =>
+{
+    await foreach (var s in client.ObserveRelayConnectionsAsync(ct))
+    {
+        // s.Relay, s.State (Connecting | Connected | Disconnected),
+        // s.Reason, s.Error, s.AttemptNumber
+        UpdateDot(s.Relay, s.State);
+    }
+});
+```
+
+Both behaviors are independently opt-out-able on the builder:
+
+```csharp
+await using var client = await NostrMarmotClient.Builder(key, provider)
+    .UseRelays("wss://relay.example")
+    .WithAutoReconnect(false)     // transport drops are terminal
+    .WithAutoResubscribe(false)   // pumps end on disconnect
+    .ConnectAsync();
+```
+
+When the client is built via `UseRelayBridge(...)` instead, the
+custom `IMarmotRelay` owns its own transport policy — the builder
+toggles are no-ops, and `ObserveRelayConnectionsAsync` returns an
+empty stream.
+
 ### State-DB management
 
 | Helper | What it does |

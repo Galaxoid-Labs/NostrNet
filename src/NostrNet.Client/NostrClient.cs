@@ -943,6 +943,47 @@ public sealed class NostrClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Yields per-relay connection state changes (Connecting / Connected /
+    /// Disconnected) as they happen, including a snapshot of the current
+    /// state of every relay in the pool on subscribe.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Use this to drive per-relay status indicators in UI, or to react to
+    /// disconnects (e.g. re-issue subscriptions on reconnect — see below).
+    /// Multi-consumer: two UI surfaces can call this independently without
+    /// stealing events from each other.
+    /// </para>
+    /// <para>
+    /// When <c>WithAutoReconnect</c> is on (default), the pool retries
+    /// dropped connections with exponential backoff (1s → 30s cap) and
+    /// emits <c>Connecting → Connected</c> on success or
+    /// <c>Connecting → Disconnected(ConnectFailed)</c> per failed attempt.
+    /// <see cref="RelayConnectionEvent.AttemptNumber"/> increments so UI
+    /// can render "retrying… (attempt N)".
+    /// </para>
+    /// <para>
+    /// In-flight <see cref="SubscribeAsync"/> / <see cref="AttachAsync"/>
+    /// calls transparently re-issue their REQ across reconnects by default
+    /// (see <c>NostrClientBuilder.WithAutoResubscribe</c>) — your
+    /// <c>await foreach</c> keeps yielding events from the new connection
+    /// without surfacing the transient drop.
+    /// </para>
+    /// <code>
+    /// await foreach (var ev in client.ObserveRelayConnectionsAsync(ct))
+    /// {
+    ///     statusByRelay[ev.Relay] = ev.State;
+    /// }
+    /// </code>
+    /// </remarks>
+    public IAsyncEnumerable<RelayConnectionEvent> ObserveRelayConnectionsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureNotDisposed();
+        return _pool.ObserveConnectionsAsync(cancellationToken);
+    }
+
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
@@ -984,6 +1025,8 @@ public sealed class NostrClientBuilder
     private readonly PrivateKey? _key;
     private readonly List<Uri> _relays = new();
     private bool _autoAuth = true;
+    private bool _autoReconnect = true;
+    private bool _autoResubscribe = true;
     private INostrEventStore? _eventStore;
 
     internal NostrClientBuilder(PrivateKey? key)
@@ -999,6 +1042,38 @@ public sealed class NostrClientBuilder
     public NostrClientBuilder WithAutoAuth(bool enabled)
     {
         _autoAuth = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables (default) or disables automatic transport reconnect with
+    /// exponential backoff (1s → 30s cap). State transitions are surfaced
+    /// via <see cref="NostrClient.ObserveRelayConnectionsAsync"/> regardless
+    /// of this setting; this only controls whether the pool retries after
+    /// a disconnect or whether the app drives reconnect itself.
+    /// </summary>
+    public NostrClientBuilder WithAutoReconnect(bool enabled)
+    {
+        _autoReconnect = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables (default) or disables transparent subscription resume across
+    /// transport reconnects. When enabled, in-flight
+    /// <see cref="NostrClient.SubscribeAsync"/> / <see cref="NostrClient.AttachAsync"/>
+    /// calls re-issue their REQ on the relay after it reconnects, without
+    /// surfacing a <see cref="SubscriptionClosed"/> for the transient drop.
+    /// Has no effect when <see cref="WithAutoReconnect"/> is off.
+    /// </summary>
+    /// <remarks>
+    /// Filters are re-issued as-supplied — if you use <c>Since</c> or
+    /// <c>Limit</c>, expect overlap with events received before the drop.
+    /// Pair with an event store for automatic dedup.
+    /// </remarks>
+    public NostrClientBuilder WithAutoResubscribe(bool enabled)
+    {
+        _autoResubscribe = enabled;
         return this;
     }
 
@@ -1046,7 +1121,7 @@ public sealed class NostrClientBuilder
             throw new InvalidOperationException("At least one relay must be configured before connecting.");
         }
 
-        var pool = new RelayPool();
+        var pool = new RelayPool { AutoReconnect = _autoReconnect, AutoResubscribe = _autoResubscribe };
         try
         {
             await pool.ConnectAsync(_relays, cancellationToken).ConfigureAwait(false);

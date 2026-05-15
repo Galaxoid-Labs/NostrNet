@@ -43,6 +43,18 @@ public sealed class RelayClient : IRelayClient
     private Task<PublishResult>? _inFlightAuthTask;
     private int _state; // 0=new, 1=connecting, 2=connected, 3=disposed
 
+    /// <summary>
+    /// Internal hook for <see cref="RelayPool"/>. Fires on every transport
+    /// state change: <see cref="RelayConnectionState.Connecting"/> at the
+    /// top of <see cref="ConnectAsync"/>, <see cref="RelayConnectionState.Connected"/>
+    /// after the handshake, and <see cref="RelayConnectionState.Disconnected"/>
+    /// when the receive loop exits (dispose, server close, or transport error).
+    /// The pool stamps in URI + attempt number and fans out to observers.
+    /// Not part of <see cref="IRelayClient"/> because fakes shouldn't be
+    /// required to implement it.
+    /// </summary>
+    internal Action<RelayConnectionState, RelayDisconnectReason, Exception?>? StateChanged { get; set; }
+
     /// <inheritdoc/>
     public Uri? Uri => _uri;
 
@@ -75,14 +87,28 @@ public sealed class RelayClient : IRelayClient
             throw new InvalidOperationException("RelayClient has already been connected or disposed.");
         }
 
-        await _webSocket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
-        _uri = uri;
+        StateChanged?.Invoke(RelayConnectionState.Connecting, RelayDisconnectReason.None, null);
 
+        try
+        {
+            await _webSocket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Connect failed before the receive loop ever runs; the loop's
+            // finally won't fire a Disconnected event for us. Emit it here.
+            Interlocked.Exchange(ref _state, 3);
+            StateChanged?.Invoke(RelayConnectionState.Disconnected, RelayDisconnectReason.ConnectFailed, ex);
+            throw;
+        }
+
+        _uri = uri;
         _runCts = new CancellationTokenSource();
         _sendTask = Task.Run(() => SendLoopAsync(_runCts.Token), CancellationToken.None);
         _receiveTask = Task.Run(() => ReceiveLoopAsync(_runCts.Token), CancellationToken.None);
 
         Interlocked.Exchange(ref _state, 2);
+        StateChanged?.Invoke(RelayConnectionState.Connected, RelayDisconnectReason.None, null);
     }
 
     /// <inheritdoc/>
@@ -448,6 +474,9 @@ public sealed class RelayClient : IRelayClient
         byte[] receiveBuffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
         var pending = new ArrayBufferWriter<byte>(initialCapacity: 64 * 1024);
 
+        var reason = RelayDisconnectReason.None;
+        Exception? terminalError = null;
+
         try
         {
             while (!cancellationToken.IsCancellationRequested
@@ -456,6 +485,7 @@ public sealed class RelayClient : IRelayClient
                 var result = await _webSocket.ReceiveAsync(receiveBuffer, cancellationToken).ConfigureAwait(false);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    reason = RelayDisconnectReason.ServerClosed;
                     break;
                 }
 
@@ -493,11 +523,12 @@ public sealed class RelayClient : IRelayClient
         }
         catch (OperationCanceledException)
         {
-            // Expected during dispose.
+            // Expected during dispose. Reason resolves in the finally based on _state.
         }
-        catch (WebSocketException)
+        catch (WebSocketException ex)
         {
-            // Connection lost. Surface to subscribers below.
+            reason = RelayDisconnectReason.TransportError;
+            terminalError = ex;
         }
         finally
         {
@@ -514,6 +545,18 @@ public sealed class RelayClient : IRelayClient
             {
                 pub.Value.TrySetException(new IOException("Relay connection closed before OK was received."));
             }
+
+            // If no specific reason was captured (e.g. clean cancellation,
+            // or the loop just exited because the socket left the Open state),
+            // distinguish dispose from a server-side close based on _state.
+            if (reason == RelayDisconnectReason.None)
+            {
+                reason = _state == 3
+                    ? RelayDisconnectReason.Disposed
+                    : RelayDisconnectReason.ServerClosed;
+            }
+
+            StateChanged?.Invoke(RelayConnectionState.Disconnected, reason, terminalError);
         }
     }
 

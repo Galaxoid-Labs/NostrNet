@@ -73,6 +73,44 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
     public NostrClient? NostrClient => _ownedClient;
 
     /// <summary>
+    /// Yields per-relay connection state changes (Connecting / Connected /
+    /// Disconnected) for the underlying transport, including a snapshot of
+    /// the current state on subscribe. Drives status indicators in chat UIs
+    /// ("3/5 relays online", "reconnecting…", etc.).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Auto-reconnect and auto-resubscribe are on by default (see
+    /// <see cref="NostrMarmotClientBuilder.WithAutoReconnect"/> /
+    /// <see cref="NostrMarmotClientBuilder.WithAutoResubscribe"/>), so a
+    /// transient drop in the middle of a conversation doesn't surface to
+    /// app code — messages keep flowing once the relay is back. This
+    /// stream is the hook for showing transient state in the UI.
+    /// </para>
+    /// <para>
+    /// When the client was built via <see cref="NostrMarmotClientBuilder.UseRelayBridge"/>,
+    /// this returns an empty stream — the custom <see cref="IMarmotRelay"/>
+    /// owns its own transport and doesn't expose state observation.
+    /// </para>
+    /// </remarks>
+    public IAsyncEnumerable<RelayConnectionEvent> ObserveRelayConnectionsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureNotDisposed();
+        return _ownedClient is null
+            ? EmptyConnectionEvents(cancellationToken)
+            : _ownedClient.ObserveRelayConnectionsAsync(cancellationToken);
+    }
+
+    private static async IAsyncEnumerable<RelayConnectionEvent> EmptyConnectionEvents(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.CompletedTask.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        yield break;
+    }
+
+    /// <summary>
     /// Begins building a Marmot client. Supply the local identity key,
     /// an MLS provider, and either a set of relay URIs (typical) or a
     /// custom <see cref="IMarmotRelay"/> (for tests / advanced use).
@@ -421,6 +459,8 @@ public sealed class NostrMarmotClientBuilder
     private readonly List<string> _relays = new();
     private IMarmotRelay? _relayBridge;
     private bool _autoAuth = true;
+    private bool _autoReconnect = true;
+    private bool _autoResubscribe = true;
     private bool _autoPublishKeyPackage = true;
     private bool _rotateAfterAccept = true;
 
@@ -442,6 +482,38 @@ public sealed class NostrMarmotClientBuilder
     public NostrMarmotClientBuilder WithAutoAuth(bool enabled)
     {
         _autoAuth = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Disables automatic transport reconnect (with exponential backoff) on
+    /// the underlying <see cref="NostrClient"/>. Default: enabled.
+    /// </summary>
+    /// <remarks>
+    /// Has no effect when <see cref="UseRelayBridge"/> is used — the custom
+    /// <see cref="IMarmotRelay"/> owns its own transport policy.
+    /// </remarks>
+    public NostrMarmotClientBuilder WithAutoReconnect(bool enabled)
+    {
+        _autoReconnect = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Disables transparent subscription resume across reconnects on the
+    /// underlying <see cref="NostrClient"/>. Default: enabled — the inbox
+    /// pump (kind-1059 invites) and per-conversation pumps (kind-445
+    /// group events) survive transient transport drops without surfacing
+    /// the disconnect to the app.
+    /// </summary>
+    /// <remarks>
+    /// Has no effect when <see cref="UseRelayBridge"/> is used. Most chat
+    /// apps want this on — disabling it means an invite that arrives
+    /// during a brief WebSocket reset is missed.
+    /// </remarks>
+    public NostrMarmotClientBuilder WithAutoResubscribe(bool enabled)
+    {
+        _autoResubscribe = enabled;
         return this;
     }
 
@@ -511,7 +583,9 @@ public sealed class NostrMarmotClientBuilder
 
             var clientBuilder = NostrClient.Builder(_identityKey)
                 .UseRelays(_relays.ToArray())
-                .WithAutoAuth(_autoAuth);
+                .WithAutoAuth(_autoAuth)
+                .WithAutoReconnect(_autoReconnect)
+                .WithAutoResubscribe(_autoResubscribe);
 
             var client = await clientBuilder.ConnectAsync(ct).ConfigureAwait(false);
             var bridge = new NostrClientMarmotRelay(client);

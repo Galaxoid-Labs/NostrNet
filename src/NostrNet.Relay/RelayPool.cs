@@ -13,14 +13,51 @@ namespace NostrNet.Relay;
 /// all relays (per-relay results are returned); subscriptions merge into a
 /// single deduplicated stream.
 /// </summary>
-public sealed class RelayPool : IAsyncDisposable
+public sealed partial class RelayPool : IAsyncDisposable
 {
     private readonly Dictionary<Uri, IRelayClient> _clients = new();
     private Keys.PrivateKey? _autoAuthKey;
     private int _disposed;
 
+    /// <summary>
+    /// When <c>true</c> (the default), the pool transparently re-establishes
+    /// a relay connection after a transport error or server-side close, using
+    /// exponential backoff (1s → 30s cap). State transitions are surfaced via
+    /// <see cref="ObserveConnectionsAsync"/>. Set to <c>false</c> if your app
+    /// wants to drive reconnect itself.
+    /// </summary>
+    public bool AutoReconnect { get; set; } = true;
+
+    /// <summary>
+    /// When <c>true</c> (the default), in-flight <see cref="SubscribeAsync"/>
+    /// calls transparently re-issue their REQ on the relay after a reconnect.
+    /// The caller's <see cref="IAsyncEnumerable{T}"/> keeps yielding events
+    /// from the new connection without surfacing a
+    /// <see cref="SubscriptionClosed"/> for the transient drop.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Has no effect when <see cref="AutoReconnect"/> is <c>false</c> — there's
+    /// no reconnect to resume over.
+    /// </para>
+    /// <para>
+    /// Filters are re-issued as-supplied. If your filter uses <c>Since</c> or
+    /// <c>Limit</c>, you'll likely see overlap with events received before the
+    /// drop — pair with an event store (which auto-dedups) for live feeds.
+    /// </para>
+    /// <para>
+    /// Per-call opt-out: not needed. One-shot fetches (the caller breaks out
+    /// of the <c>await foreach</c> or cancels its <see cref="CancellationToken"/>)
+    /// don't trigger resume because the pump cancels with the caller.
+    /// </para>
+    /// </remarks>
+    public bool AutoResubscribe { get; set; } = true;
+
     /// <summary>The URIs of the relays currently in the pool.</summary>
-    public IReadOnlyCollection<Uri> Uris => _clients.Keys;
+    public IReadOnlyCollection<Uri> Uris
+    {
+        get { lock (_clients) { return _clients.Keys.ToArray(); } }
+    }
 
     /// <summary>
     /// Connects to all relays in parallel. Failed individual connections do
@@ -38,7 +75,7 @@ public sealed class RelayPool : IAsyncDisposable
         var failures = new ConcurrentDictionary<Uri, Exception>();
         var connectTasks = uris.Select(async uri =>
         {
-            var client = new RelayClient();
+            var client = NewObservedClient(uri);
             try
             {
                 await client.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
@@ -52,6 +89,14 @@ public sealed class RelayPool : IAsyncDisposable
             {
                 failures[uri] = ex;
                 await client.DisposeAsync().ConfigureAwait(false);
+                // Note: RelayClient already emitted Disconnected(ConnectFailed)
+                // via its StateChanged callback; ObserveConnectionsAsync sees it.
+                // We still surface failures via the return dictionary for
+                // callers who want a one-shot snapshot.
+                if (AutoReconnect)
+                {
+                    ScheduleReconnect(uri);
+                }
             }
         }).ToArray();
 
@@ -74,6 +119,21 @@ public sealed class RelayPool : IAsyncDisposable
         }
 
         client.AutoAuthKey = _autoAuthKey;
+
+        // If the caller handed us a concrete RelayClient, hook its state
+        // callback for observation + reconnect. Foreign IRelayClient impls
+        // (test fakes) don't get state observation — that's acceptable
+        // because they're under caller control.
+        if (client is RelayClient rc)
+        {
+            AttachStateCallback(uri, rc);
+            // Synthesize a Connected event for the existing connection so
+            // observers see this relay in their snapshot.
+            if (rc.IsConnected)
+            {
+                HandleStateChanged(uri, RelayConnectionState.Connected, RelayDisconnectReason.None, null);
+            }
+        }
     }
 
     /// <summary>
@@ -217,10 +277,10 @@ public sealed class RelayPool : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(filters);
         EnsureNotDisposed();
 
-        IRelayClient[] snapshot;
+        (Uri uri, IRelayClient client)[] snapshot;
         lock (_clients)
         {
-            snapshot = _clients.Values.ToArray();
+            snapshot = _clients.Select(kvp => (kvp.Key, kvp.Value)).ToArray();
         }
 
         if (snapshot.Length == 0)
@@ -240,16 +300,26 @@ public sealed class RelayPool : IAsyncDisposable
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        var pumpTasks = snapshot.Select(client => Task.Run(async () =>
+        var pumpTasks = snapshot.Select(entry => Task.Run(async () =>
         {
+            Uri uri = entry.uri;
+            IRelayClient client = entry.client;
+
             // Per-relay retry counter; capped so an unresolvable auth-required
             // (e.g. our key isn't on the relay's allow-list) doesn't loop.
             int authRetries = 0;
             const int MaxAuthRetries = 1;
 
+            // Captured across iterations of the resubscribe loop so the
+            // terminal SubscriptionClosed (if any) surfaces the relay's last
+            // reason rather than a stale "connection closed".
+            string? finalReason = null;
+
             while (true)
             {
                 bool retryAfterAuth = false;
+                bool transportDrop = false;
+
                 try
                 {
                     await foreach (var ev in client.SubscribeAsync(subscriptionId, filters, linked.Token).ConfigureAwait(false))
@@ -281,52 +351,90 @@ public sealed class RelayPool : IAsyncDisposable
                                 break;
 
                             case SubscriptionClosed closed:
-                                if (Interlocked.Increment(ref closedCount) == totalRelays)
-                                {
-                                    await merged.Writer.WriteAsync(new SubscriptionClosed(closed.Reason), linked.Token).ConfigureAwait(false);
-                                    merged.Writer.TryComplete();
-                                }
-
+                                finalReason = closed.Reason;
                                 break;
                         }
                     }
                 }
                 catch (OperationCanceledException)
                 {
-                    break;
-                }
-                catch (Exception)
-                {
-                    // Treat any per-relay transport failure as a close.
-                    if (Interlocked.Increment(ref closedCount) == totalRelays)
-                    {
-                        merged.Writer.TryComplete();
-                    }
-
-                    break;
-                }
-
-                if (!retryAfterAuth)
-                {
-                    break;
-                }
-
-                // Wait for the AUTH triggered by the auth-required CLOSED
-                // (auto-auth fired when the challenge arrived) before
-                // re-subscribing on this relay.
-                try
-                {
-                    await client.WaitForAuthAsync(linked.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
+                    // Caller is leaving. Don't count this as a relay close for
+                    // the merged stream — match the pre-resubscribe behavior.
+                    return;
                 }
                 catch
                 {
-                    // Auth task itself failed; try the re-subscribe anyway —
-                    // it'll likely just fail again and the retry cap stops the loop.
+                    transportDrop = true;
                 }
+
+                if (retryAfterAuth)
+                {
+                    try
+                    {
+                        await client.WaitForAuthAsync(linked.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                    catch
+                    {
+                        // Auth task itself failed; try the re-subscribe anyway —
+                        // it'll likely just fail again and the retry cap stops the loop.
+                    }
+
+                    continue;
+                }
+
+                if (linked.Token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                // If the inner foreach exited cleanly and the WebSocket is
+                // still open, the relay sent a server-side CLOSED — this pump
+                // is terminal. Otherwise the transport dropped underneath us
+                // (catch-all above, or the receive loop's finally emitted
+                // SubscriptionClosed("connection closed") and IsConnected has
+                // flipped to false).
+                if (!transportDrop && client.IsConnected)
+                {
+                    break;
+                }
+
+                if (!AutoResubscribe || !AutoReconnect)
+                {
+                    break;
+                }
+
+                // Wait for the pool's reconnect machinery to bring this relay
+                // back, then reissue REQ on the fresh RelayClient instance.
+                IRelayClient next;
+                try
+                {
+                    next = await WaitForReconnectAsync(uri, linked.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch
+                {
+                    // Pool disposed or relay removed. Terminal.
+                    break;
+                }
+
+                client = next;
+                authRetries = 0;
+                finalReason = null;
+            }
+
+            if (Interlocked.Increment(ref closedCount) == totalRelays)
+            {
+                await merged.Writer.WriteAsync(
+                    new SubscriptionClosed(finalReason ?? "connection closed"),
+                    linked.Token).ConfigureAwait(false);
+                merged.Writer.TryComplete();
             }
         }, linked.Token)).ToArray();
 
@@ -390,6 +498,9 @@ public sealed class RelayPool : IAsyncDisposable
         {
             return;
         }
+
+        // Cancel any in-flight reconnect tasks and signal observers to complete.
+        ShutdownObservation();
 
         IRelayClient[] toDispose;
         lock (_clients)

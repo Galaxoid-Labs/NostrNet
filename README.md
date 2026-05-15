@@ -606,6 +606,86 @@ Subscriptions are `IAsyncEnumerable<ReceivedEvent>` — they yield as events
 arrive and complete when all relays close the subscription or the
 `CancellationToken` fires.
 
+### Observing relay connections
+
+Apps that talk to multiple relays usually want a per-relay status
+indicator and a "retrying…" badge. `ObserveRelayConnectionsAsync` is
+that primitive:
+
+```csharp
+using NostrNet.Relay;
+
+_ = Task.Run(async () =>
+{
+    await foreach (var s in client.ObserveRelayConnectionsAsync(cts.Token))
+    {
+        // s.Relay, s.State, s.Reason, s.Error, s.AttemptNumber
+        statusByRelay[s.Relay] = s.State;
+    }
+});
+```
+
+Each `RelayConnectionEvent` carries:
+
+- `Relay` — the URI this event is about.
+- `State` — `Connecting`, `Connected`, or `Disconnected`.
+- `Reason` — for `Disconnected`: `Disposed` (terminal — the client/pool was
+  disposed), `ConnectFailed` (handshake error, DNS, TCP refused),
+  `TransportError` (WebSocket errored after being open), or `ServerClosed`
+  (relay sent a clean close).
+- `Error` — the underlying exception for transport errors / connect
+  failures, otherwise null.
+- `AttemptNumber` — `1` for the initial connect, incremented on each
+  reconnect attempt. Useful for "retrying… (attempt N)" UI.
+
+**On subscribe, the stream yields a snapshot first** — one event per relay
+currently known to the pool — so UI starts populated rather than empty.
+Multi-consumer: two UI surfaces can call `ObserveRelayConnectionsAsync`
+independently without stealing events from each other.
+
+#### Auto-reconnect
+
+On by default. When a relay drops with a non-`Disposed` reason, the pool
+retries with exponential backoff (1s, 2s, 4s, 8s, 16s, 30s, repeating at
+30s). Each attempt emits `Connecting → Connected` on success or
+`Connecting → Disconnected(ConnectFailed)` on failure, so the observer
+sees the full retry timeline.
+
+#### Auto-resubscribe
+
+Also on by default. In-flight `SubscribeAsync` / `AttachAsync` calls
+transparently re-issue their REQ on the relay after it reconnects — your
+`await foreach` keeps yielding events from the new connection without
+surfacing a `SubscriptionClosed` for the transient drop. This makes
+"attach and forget" patterns survive flaky networks without any caller
+intervention.
+
+One thing to know: filters are re-issued **as-supplied**. If your filter
+uses `Since` or `Limit`, you'll see overlap with events received before
+the drop. Pair with an event store (which auto-dedups by event id) for
+live feeds.
+
+#### Opting out
+
+Both behaviors are independently controllable on the builder:
+
+```csharp
+await using var client = await NostrClient.Builder(key)
+    .UseRelays("wss://relay.damus.io", "wss://nos.lol")
+    .WithAutoReconnect(false)    // transport drops are terminal
+    .WithAutoResubscribe(false)  // subscriptions end on disconnect
+    .ConnectAsync();
+```
+
+`WithAutoResubscribe(false)` is useful if your app does fine-grained
+subscription lifecycle management itself; you still get reconnect for the
+status indicator. `WithAutoReconnect(false)` implies no resubscribe
+(there's no reconnect to resume over).
+
+Per-call opt-out isn't needed: one-shot fetches that `break` out of the
+`await foreach` or cancel their `CancellationToken` don't trigger resume,
+because the pump cancels with the caller.
+
 ### NIP-17 direct messages
 
 ```csharp
