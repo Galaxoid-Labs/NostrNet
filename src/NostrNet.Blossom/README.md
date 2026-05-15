@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Galaxoid-Labs/NostrNet/main/logo.png" alt="NostrNet" width="320" />
+</p>
+
 # NostrNet.Blossom
 
 [Blossom](https://github.com/hzrd149/blossom) (content-addressed media

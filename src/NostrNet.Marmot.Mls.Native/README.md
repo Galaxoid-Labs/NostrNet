@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Galaxoid-Labs/NostrNet/main/logo.png" alt="NostrNet" width="320" />
+</p>
+
 # NostrNet.Marmot.Mls.Native
 
 OpenMLS-backed `IMarmotMlsProvider` implementation for

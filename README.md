@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Galaxoid-Labs/NostrNet/main/logo.png" alt="NostrNet" width="320" />
+</p>
+
 # NostrNet
 
 A cross-platform .NET 10 [Nostr](https://github.com/nostr-protocol/nostr)

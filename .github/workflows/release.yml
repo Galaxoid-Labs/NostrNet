@@ -255,3 +255,15 @@ jobs:
           # Pre-release flag for tags like v0.1.0-preview1, v0.2.0-rc1, etc.
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           draft: false
+
+      # Push to nuget.org. --skip-duplicate makes the step idempotent
+      # so re-running a release workflow on the same tag doesn't fail
+      # on packages that were already pushed. .snupkg files ride
+      # along automatically because they're adjacent to each .nupkg.
+      - name: Push to nuget.org (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: >-
+          dotnet nuget push "./packages/*.nupkg"
+          --api-key ${{ secrets.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

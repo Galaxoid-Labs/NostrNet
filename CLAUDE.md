@@ -422,6 +422,10 @@ they're load-bearing for every NIP that builds or parses events.
 - CI: `.github/workflows/ci.yml` (matrix on ubuntu/windows/macos +
   AOT smoke). Each runner installs Rust via `dtolnay/rust-toolchain@stable`
   and caches cargo registry + target dir.
-- Release: `release.yml` (v* tags → `.nupkg` files attached to GitHub
-  release). NuGet multi-RID packaging for the Native package is **not
-  yet implemented** — that's the next planned milestone.
+- Release: `release.yml` (v* tags → `.nupkg` files attached to a
+  GitHub release AND pushed to nuget.org via `NUGET_API_KEY` secret).
+  The Native package is multi-RID: the workflow cross-compiles six
+  artifacts (osx/linux/win × x64/arm64) in parallel and the csproj
+  packs them under `runtimes/<rid>/native/` via the `prebuilt/` glob.
+  `--skip-duplicate` on the push step makes re-running the workflow
+  on the same tag a no-op.
