@@ -204,6 +204,54 @@ public class Nip05Tests
         Assert.Contains("Owner", result.FailureReason!, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ----- Bool sugar.
+
+    [Fact]
+    public async Task Profile_IsNip05VerifiedAsync_TrueOnMatch()
+    {
+        using var key = PrivateKey.Generate();
+        string hex = key.PublicKey.ToHex();
+        // Use string.Concat to keep the JSON literal free of `}}`
+        // ambiguity inside an interpolated raw string.
+        using var client = StubClient((_, _) =>
+            JsonResponse("{\"names\":{\"alice\":\"" + hex + "\"}}"));
+
+        var profile = Profile.FromEvent(BuildKind0(key, "{\"nip05\":\"alice@example.com\"}"));
+        Assert.True(await profile.IsNip05VerifiedAsync(client));
+    }
+
+    [Fact]
+    public async Task Profile_IsNip05VerifiedAsync_FalseOnAnyFailure()
+    {
+        using var key = PrivateKey.Generate();
+
+        // Mismatched names entry — another pubkey claims this identifier.
+        using var differentKey = PrivateKey.Generate();
+        using var clientMismatch = StubClient((_, _) =>
+            JsonResponse("{\"names\":{\"alice\":\"" + differentKey.PublicKey.ToHex() + "\"}}"));
+        var profile = Profile.FromEvent(BuildKind0(key, "{\"nip05\":\"alice@example.com\"}"));
+        Assert.False(await profile.IsNip05VerifiedAsync(clientMismatch));
+
+        // No nip05 claim — fail-closed, no exception.
+        var noClaim = Profile.FromEvent(BuildKind0(key, "{}"));
+        Assert.False(await noClaim.IsNip05VerifiedAsync());
+
+        // Network-side HttpRequestException.
+        using var clientThrows = StubClient((_, _) => throw new HttpRequestException("dns"));
+        Assert.False(await profile.IsNip05VerifiedAsync(clientThrows));
+    }
+
+    [Fact]
+    public async Task NostrEvent_IsNip05VerifiedAsync_TrueOnMatch()
+    {
+        using var key = PrivateKey.Generate();
+        string hex = key.PublicKey.ToHex();
+        var ev = BuildKind0(key, "{\"nip05\":\"alice@example.com\"}");
+        using var client = StubClient((_, _) =>
+            JsonResponse("{\"names\":{\"alice\":\"" + hex + "\"}}"));
+        Assert.True(await ev.IsNip05VerifiedAsync(client));
+    }
+
     // ----- Helpers.
 
     private static NostrEvent BuildKind0(PrivateKey key, string content) =>
