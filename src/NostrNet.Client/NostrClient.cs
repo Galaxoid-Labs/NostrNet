@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 using System.Runtime.CompilerServices;
+using NostrNet.Badges;
 using NostrNet.Crypto;
 using NostrNet.Events;
 using NostrNet.Keys;
@@ -464,6 +465,224 @@ public sealed class NostrClient : IAsyncDisposable
         }
 
         return best;
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // NIP-58 badges
+    // ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Publishes a NIP-58 Badge Definition (kind 30009) under the
+    /// given <paramref name="identifier"/>. Returns the published
+    /// <see cref="BadgeDefinition"/> so callers have the address
+    /// string ready for awarding.
+    /// </summary>
+    public async Task<BadgeDefinition> PublishBadgeDefinitionAsync(
+        string identifier,
+        string? name = null,
+        string? description = null,
+        string? imageUrl = null,
+        string? imageDim = null,
+        IEnumerable<(string Url, string? Dim)>? thumbnails = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(identifier);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(PublishBadgeDefinitionAsync));
+
+        var builder = BadgeDefinition.Create(identifier);
+        if (name is not null) builder.WithName(name);
+        if (description is not null) builder.WithDescription(description);
+        if (imageUrl is not null) builder.WithImage(imageUrl, imageDim);
+        if (thumbnails is not null)
+        {
+            foreach (var (url, dim) in thumbnails) builder.AddThumbnail(url, dim);
+        }
+
+        var ev = builder.BuildAndSign(key);
+        await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
+        return BadgeDefinition.FromEvent(ev);
+    }
+
+    /// <summary>
+    /// Publishes a NIP-58 Badge Award (kind 8) for the given badge
+    /// to one or more recipients. The signer (the client's identity)
+    /// is the issuer; <paramref name="badgeIdentifier"/> must point
+    /// at a Badge Definition this user controls.
+    /// </summary>
+    public async Task<BadgeAward> AwardBadgeAsync(
+        string badgeIdentifier,
+        IEnumerable<PublicKey> recipients,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(badgeIdentifier);
+        ArgumentNullException.ThrowIfNull(recipients);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(AwardBadgeAsync));
+
+        var builder = BadgeAward.Create(BadgeDefinition.Address(key.PublicKey, badgeIdentifier));
+        bool any = false;
+        foreach (var r in recipients)
+        {
+            builder.ToRecipient(r);
+            any = true;
+        }
+
+        if (!any)
+        {
+            throw new ArgumentException("At least one recipient is required.", nameof(recipients));
+        }
+
+        var ev = builder.BuildAndSign(key);
+        await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
+        return BadgeAward.FromEvent(ev);
+    }
+
+    /// <summary>
+    /// Fetches the current Badge Definition for <paramref name="issuer"/>
+    /// + <paramref name="identifier"/>. Returns <c>null</c> when none
+    /// arrives before <paramref name="timeout"/>.
+    /// </summary>
+    public async Task<BadgeDefinition?> TryGetBadgeDefinitionAsync(
+        PublicKey issuer,
+        string identifier,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(issuer);
+        ArgumentException.ThrowIfNullOrEmpty(identifier);
+        EnsureNotDisposed();
+
+        var filter = new Filter
+        {
+            Kinds = new[] { Nip58Kinds.BadgeDefinition },
+            Authors = new[] { issuer.ToHex() },
+            TagFilters = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+            {
+                ["d"] = new[] { identifier },
+            },
+            Limit = 1,
+        };
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(5));
+
+        BadgeDefinition? best = null;
+        try
+        {
+            await foreach (var received in SubscribeAsync(new[] { filter }, cts.Token).ConfigureAwait(false))
+            {
+                if (BadgeDefinition.TryFromEvent(received.Event, out var def)
+                    && def is not null
+                    && def.Identifier == identifier
+                    && def.Issuer.Equals(issuer)
+                    && (best is null || def.CreatedAt > best.CreatedAt))
+                {
+                    best = def;
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* timeout */ }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Fetches the current Profile Badges event for
+    /// <paramref name="owner"/>, or <c>null</c> if none arrives in
+    /// the timeout.
+    /// </summary>
+    public async Task<ProfileBadges?> TryGetProfileBadgesAsync(
+        PublicKey owner,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        EnsureNotDisposed();
+
+        var filter = new Filter
+        {
+            Kinds = new[] { Nip58Kinds.ProfileBadges },
+            Authors = new[] { owner.ToHex() },
+            TagFilters = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+            {
+                ["d"] = new[] { Nip58Kinds.ProfileBadgesIdentifier },
+            },
+            Limit = 1,
+        };
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(5));
+
+        ProfileBadges? best = null;
+        try
+        {
+            await foreach (var received in SubscribeAsync(new[] { filter }, cts.Token).ConfigureAwait(false))
+            {
+                if (ProfileBadges.TryFromEvent(received.Event, out var parsed)
+                    && parsed is not null
+                    && parsed.Owner.Equals(owner)
+                    && (best is null || parsed.CreatedAt > best.CreatedAt))
+                {
+                    best = parsed;
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* timeout */ }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Adds <paramref name="award"/> to the calling user's profile
+    /// badges (NIP-58 kind 30008). Fetches the existing Profile
+    /// Badges event, appends the new (a, e) pair, and re-publishes.
+    /// No-ops if the award is already on the profile.
+    /// </summary>
+    public async Task<ProfileBadges> AcceptBadgeAsync(
+        BadgeAward award,
+        string? recommendedRelay = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(award);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(AcceptBadgeAsync));
+
+        var existing = await TryGetProfileBadgesAsync(key.PublicKey, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var builder = existing?.ToBuilder() ?? ProfileBadges.Create();
+
+        // Idempotent — don't add a duplicate.
+        bool already = existing?.Entries.Any(e =>
+            e.AwardEventId.Equals(award.Id)) ?? false;
+        if (!already)
+        {
+            builder.Add(award, recommendedRelay);
+        }
+
+        var ev = builder.BuildAndSign(key);
+        await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
+        return ProfileBadges.FromEvent(ev);
+    }
+
+    /// <summary>
+    /// Removes every entry referencing the given badge from the
+    /// caller's Profile Badges event and re-publishes.
+    /// </summary>
+    public async Task<ProfileBadges?> RemoveBadgeFromProfileAsync(
+        string badgeAddress,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(badgeAddress);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(RemoveBadgeFromProfileAsync));
+
+        var existing = await TryGetProfileBadgesAsync(key.PublicKey, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (existing is null) return null;
+
+        var builder = existing.ToBuilder().Remove(badgeAddress);
+        var ev = builder.BuildAndSign(key);
+        await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
+        return ProfileBadges.FromEvent(ev);
     }
 
     /// <summary>
