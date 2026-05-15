@@ -13,8 +13,11 @@ bridge.
 ## Install
 
 ```sh
-dotnet add package NostrNet.Marmot.Mls.Native
+dotnet add package NostrNet.Marmot.Mls.Native --prerelease
 ```
+
+`--prerelease` is required while the current releases are tagged
+`-previewN`; drop it once a stable `v0.1.0` ships.
 
 The package ships pre-built native binaries for the supported runtime
 identifiers. No Rust toolchain required at consume time.
