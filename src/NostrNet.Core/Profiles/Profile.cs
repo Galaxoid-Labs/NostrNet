@@ -25,8 +25,11 @@ namespace NostrNet.Profiles;
 /// equal to the event's pubkey so it can be verified against external
 /// identity proofs (e.g., NIP-05).
 /// </remarks>
-public sealed record Profile
+public sealed record Profile : INostrTypedEvent<Profile>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 0 };
+
     /// <summary>The pubkey that authored the metadata event. <c>null</c> when constructed without an event.</summary>
     /// <remarks>Not serialized — it comes from the event's <c>pubkey</c> field, not the content JSON.</remarks>
     [JsonIgnore]

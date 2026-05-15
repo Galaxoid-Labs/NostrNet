@@ -13,6 +13,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/NostrNet.Blossom.Tests/NostrNet.Blossom.Tests.csproj" />
+    <Project Path="tests/NostrNet.Client.Tests/NostrNet.Client.Tests.csproj" />
     <Project Path="tests/NostrNet.Core.Tests/NostrNet.Core.Tests.csproj" />
     <Project Path="tests/NostrNet.Crypto.Tests/NostrNet.Crypto.Tests.csproj" />
     <Project Path="tests/NostrNet.Marmot.Mls.Native.Tests/NostrNet.Marmot.Mls.Native.Tests.csproj" />

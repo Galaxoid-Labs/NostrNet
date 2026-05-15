@@ -33,8 +33,11 @@ public static class NipB0Kinds
 /// <summary>
 /// A typed view of a NIP-B0 web bookmark event.
 /// </summary>
-public sealed class WebBookmark
+public sealed class WebBookmark : INostrTypedEvent<WebBookmark>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 39701 };
+
     /// <summary>The author of the bookmark.</summary>
     public required PublicKey Author { get; init; }
 

@@ -88,6 +88,20 @@ without either.
    auto-dedups when a store is attached**; `AttachAsync` is the
    fire-and-forget "fill the store" entry. The recommended app pattern
    is `AttachAsync` to subscribe + `store.ObserveAsync` to read.
+9. **Typed access via static abstract interface members.** Every typed
+   wrapper that maps to specific kind(s) implements
+   `INostrTypedEvent<TSelf>` (Core/Events/) — a static `Kinds` property
+   + static `TryFromEvent`. The generic extensions in
+   `NostrNet.Client/Storage/TypedStoreExtensions.cs` (`ObserveAsync<T>`,
+   `QueryAsync<T>`, `GetAsync<T>`) light up for any conforming type
+   automatically. Adding a new typed wrapper means implementing the
+   interface — no per-type extension methods to maintain.
+   **`DeletionRequest` uses explicit interface implementation** because
+   it has an instance `Kinds` property (the deletion's `k` tags) that
+   would collide with the static interface `Kinds`. Future types with
+   the same conflict should follow that pattern. Conversion failures
+   (`TryFromEvent` returns false) are silently skipped — apps shouldn't
+   see malformed events bubble up through the typed surface.
 
 ## NIPs implemented
 

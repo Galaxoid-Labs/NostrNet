@@ -38,8 +38,11 @@ public sealed record Contact(PublicKey PubKey, string? RecommendedRelay = null, 
 /// <summary>
 /// A typed view of a NIP-02 kind-3 contact list event.
 /// </summary>
-public sealed class ContactList
+public sealed class ContactList : INostrTypedEvent<ContactList>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 3 };
+
     /// <summary>The list author.</summary>
     public required PublicKey Owner { get; init; }
 

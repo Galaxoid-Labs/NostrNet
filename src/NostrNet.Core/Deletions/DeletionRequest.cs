@@ -76,8 +76,13 @@ public sealed record AddressableEventCoordinates(int Kind, PublicKey Author, str
 /// <summary>
 /// A typed view of a NIP-09 kind-5 deletion request.
 /// </summary>
-public sealed class DeletionRequest
+public sealed class DeletionRequest : INostrTypedEvent<DeletionRequest>
 {
+    // Explicit interface implementation to avoid a name collision with the
+    // instance `Kinds` property below (which carries this deletion's
+    // referenced "k" tags — a different concept entirely).
+    static IReadOnlyList<int> INostrTypedEvent<DeletionRequest>.Kinds { get; } = new[] { Nip09Kinds.DeletionRequest };
+
     /// <summary>The pubkey requesting deletion. Only this author's events can be deleted by this request.</summary>
     public required PublicKey Requester { get; init; }
 

@@ -23,6 +23,7 @@
 //     ["image", <url>, <dim?>]               optional, recommended 1024×1024
 //     ["thumb", <url>, <dim?>]               optional, repeatable
 
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 using NostrNet.Nip19;
@@ -51,8 +52,11 @@ public static class Nip58Kinds
 public sealed record BadgeImage(string Url, string? Dim);
 
 /// <summary>A typed view of a NIP-58 kind-30009 Badge Definition event.</summary>
-public sealed class BadgeDefinition
+public sealed class BadgeDefinition : INostrTypedEvent<BadgeDefinition>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { Nip58Kinds.BadgeDefinition };
+
     /// <summary>The issuer's pubkey — the entity defining this badge.</summary>
     public required PublicKey Issuer { get; init; }
 
@@ -170,7 +174,7 @@ public sealed class BadgeDefinition
     }
 
     /// <summary>Tries to parse <paramref name="ev"/> as a kind-30009 Badge Definition.</summary>
-    public static bool TryFromEvent(NostrEvent? ev, out BadgeDefinition? definition)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out BadgeDefinition? definition)
     {
         definition = null;
         if (ev is null || ev.Kind != Nip58Kinds.BadgeDefinition)

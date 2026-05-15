@@ -1195,6 +1195,68 @@ relays  →  AttachAsync  →  store  →  Observe / Query  →  UI
                        single source of truth
 ```
 
+### Typed access — `store.ObserveAsync<Profile>()`
+
+Raw events are fine when you want them. For everything else, the store
+returns **typed values** via a single generic surface — no need to call
+`Profile.FromEvent(ev)` in every loop:
+
+```csharp
+using NostrNet.Client.Storage;     // generic ObserveAsync<T> / QueryAsync<T> / GetAsync<T>
+
+// Default Kinds — uses Profile.Kinds = [0] automatically
+await foreach (var profile in store.ObserveAsync<Profile>(ct: ct))
+    cache[profile.Owner!] = profile;
+
+// Caller-supplied filter narrows further (Article.Kinds = [30023, 30024])
+await foreach (var article in store.ObserveAsync<Article>(
+    new Filter { Kinds = new[] { 30023 } }, ct))   // published only, skip drafts
+    feed.Add(article);
+
+// Single typed lookup
+Profile? alice = await store.GetAsync<Profile>(eventId);
+
+// Snapshot only
+await foreach (var bookmark in store.QueryAsync<WebBookmark>())
+    Console.WriteLine(bookmark.ToUrl());
+```
+
+How it works: every typed wrapper implements `INostrTypedEvent<TSelf>`
+(static `Kinds` property + static `TryFromEvent` — both C# 11 static
+abstract interface members). The generic extension applies `T.Kinds`
+as the default filter, runs the underlying query, then projects each
+match through `T.TryFromEvent`, silently skipping events that fail
+to parse (malformed JSON, missing required tags, etc.).
+
+Fully AOT-safe — each `<T>` instantiation resolves at compile time,
+no reflection, no type registry.
+
+The following Core wrappers are typed-store ready out of the box:
+
+| Type | Kinds | NIP |
+|---|---|---|
+| `Profile` | 0 | 01 |
+| `ContactList` | 3 | 02 |
+| `DeletionRequest` | 5 | 09 |
+| `RepostEvent` | 6, 16 | 18 |
+| `Reaction` | 7 | 25 |
+| `BadgeAward` | 8 | 58 |
+| `PictureEvent` | 20 | 68 |
+| `VideoEvent` | 21, 22, 34235, 34236 | 71 |
+| `FileMetadata` | 1063 | 94 |
+| `Comment` | 1111 | 22 |
+| `RelayListMetadata` | 10002 | 65 |
+| `BlossomServerList` | 10063 | B7 |
+| `Article` | 30023, 30024 | 23 |
+| `ProfileBadges` | 30008 | 58 |
+| `BadgeDefinition` | 30009 | 58 |
+| `UserStatus` | 30315 | 38 |
+| `KeyPackageEvent` | 30443 | (Marmot MIP-00) |
+| `WebBookmark` | 39701 | B0 |
+
+Your own types work too — implement `INostrTypedEvent<TSelf>` (one
+property, one method) and the generic extensions light up automatically.
+
 ### Custom storage backends
 
 Implement `INostrEventStore` and pass it to `WithEventStore(...)`. The

@@ -22,6 +22,7 @@
 // is recommended.
 
 using System.Text.Json;
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 
@@ -40,8 +41,11 @@ public static class Nip18Kinds
 }
 
 /// <summary>A typed view of a NIP-18 kind-6 / kind-16 repost event.</summary>
-public sealed class RepostEvent
+public sealed class RepostEvent : INostrTypedEvent<RepostEvent>
 {
+    /// <summary>Nostr kind(s) this type represents (kind 6 for kind-1 notes; kind 16 generic).</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 6, 16 };
+
     /// <summary>The author of the repost (the user doing the resharing).</summary>
     public required PublicKey Author { get; init; }
 
@@ -158,7 +162,7 @@ public sealed class RepostEvent
     /// Tries to parse <paramref name="ev"/> as a NIP-18 repost. Returns <c>false</c>
     /// for wrong-kind or malformed inputs.
     /// </summary>
-    public static bool TryFromEvent(NostrEvent? ev, out RepostEvent? repost)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out RepostEvent? repost)
     {
         repost = null;
         if (ev is null || !Nip18Kinds.IsRepostKind(ev.Kind))

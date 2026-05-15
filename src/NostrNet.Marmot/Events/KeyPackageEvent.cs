@@ -22,8 +22,11 @@ namespace NostrNet.Marmot.Events;
 /// <summary>
 /// A typed view of a kind-30443 KeyPackage event (MIP-00).
 /// </summary>
-public sealed class KeyPackageEvent
+public sealed class KeyPackageEvent : INostrTypedEvent<KeyPackageEvent>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { MarmotKinds.KeyPackage };
+
     /// <summary>Author pubkey (the user this KeyPackage represents).</summary>
     public required PublicKey Author { get; init; }
 

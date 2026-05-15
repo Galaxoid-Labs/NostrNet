@@ -21,6 +21,7 @@
 // "ordered list of preferred servers"). NostrNet preserves the
 // tag-order on parse and emit.
 
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 
@@ -39,8 +40,11 @@ public static class BlossomKinds
 /// clients trying to fetch a file by sha256 should walk the list
 /// from index 0 onward.
 /// </summary>
-public sealed class BlossomServerList
+public sealed class BlossomServerList : INostrTypedEvent<BlossomServerList>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { BlossomKinds.UserServerList };
+
     /// <summary>The owner of this list.</summary>
     public required PublicKey Author { get; init; }
 
@@ -85,7 +89,7 @@ public sealed class BlossomServerList
     /// Tries to parse <paramref name="ev"/> as a NIP-B7 user server list.
     /// Returns <c>false</c> for non-10063 events; never throws.
     /// </summary>
-    public static bool TryFromEvent(NostrEvent? ev, out BlossomServerList? list)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out BlossomServerList? list)
     {
         list = null;
         if (ev is null || ev.Kind != BlossomKinds.UserServerList)

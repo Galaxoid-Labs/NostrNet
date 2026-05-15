@@ -26,6 +26,7 @@
 //     ["a", <kind:pub:d>]      optional: referenced replaceable event
 
 using System.Globalization;
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 using NostrNet.Nip19;
@@ -50,8 +51,11 @@ public static class UserStatusTypes
 }
 
 /// <summary>A typed view of a NIP-38 kind-30315 user-status event.</summary>
-public sealed class UserStatus
+public sealed class UserStatus : INostrTypedEvent<UserStatus>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { Nip38Kinds.UserStatus };
+
     /// <summary>The status author.</summary>
     public required PublicKey Author { get; init; }
 
@@ -173,7 +177,7 @@ public sealed class UserStatus
     }
 
     /// <summary>Tries to parse <paramref name="ev"/> as a NIP-38 user status. Returns <c>false</c> for wrong-kind or malformed inputs.</summary>
-    public static bool TryFromEvent(NostrEvent? ev, out UserStatus? status)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out UserStatus? status)
     {
         status = null;
         if (ev is null || ev.Kind != Nip38Kinds.UserStatus)

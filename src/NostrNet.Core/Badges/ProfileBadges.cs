@@ -18,6 +18,7 @@
 // callers can cross-check by fetching the award and comparing
 // addresses).
 
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 
@@ -33,8 +34,11 @@ public sealed record ProfileBadgeEntry(
     string? RecommendedRelay);
 
 /// <summary>A typed view of a NIP-58 kind-30008 Profile Badges event.</summary>
-public sealed class ProfileBadges
+public sealed class ProfileBadges : INostrTypedEvent<ProfileBadges>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { Nip58Kinds.ProfileBadges };
+
     /// <summary>The user whose profile these badges belong to.</summary>
     public required PublicKey Owner { get; init; }
 
@@ -121,7 +125,7 @@ public sealed class ProfileBadges
     }
 
     /// <summary>Tries to parse <paramref name="ev"/> as a kind-30008 Profile Badges event.</summary>
-    public static bool TryFromEvent(NostrEvent? ev, out ProfileBadges? profile)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out ProfileBadges? profile)
     {
         profile = null;
         if (ev is null || ev.Kind != Nip58Kinds.ProfileBadges)

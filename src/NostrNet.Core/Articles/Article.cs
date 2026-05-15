@@ -42,8 +42,11 @@ public static class Nip23Kinds
 /// Use <see cref="FromEvent"/> to parse a received article event, or
 /// <see cref="ArticleBuilder"/> via <see cref="Create"/> to build a new one.
 /// </remarks>
-public sealed class Article
+public sealed class Article : INostrTypedEvent<Article>
 {
+    /// <summary>Nostr kind(s) this type represents (published + draft).</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 30023, 30024 };
+
     /// <summary>The article's author.</summary>
     public required PublicKey Author { get; init; }
 

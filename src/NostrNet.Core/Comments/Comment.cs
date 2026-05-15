@@ -60,8 +60,11 @@ public sealed record ExternalCommentTarget(string Identifier, string? Kind = nul
 /// <summary>
 /// A typed view of a NIP-22 comment event.
 /// </summary>
-public sealed class Comment
+public sealed class Comment : INostrTypedEvent<Comment>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 1111 };
+
     /// <summary>The comment author.</summary>
     public required PublicKey Author { get; init; }
 

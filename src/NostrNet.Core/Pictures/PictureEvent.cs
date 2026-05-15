@@ -21,6 +21,7 @@
 // replaceable). React via NIP-25, comment via NIP-22 — both work
 // without anything NIP-68-specific.
 
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 
@@ -41,8 +42,11 @@ public static class Nip68Kinds
 /// <see cref="PictureEventBuilder"/> via <see cref="Create"/> to build
 /// a new one.
 /// </remarks>
-public sealed class PictureEvent
+public sealed class PictureEvent : INostrTypedEvent<PictureEvent>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 20 };
+
     /// <summary>The author's pubkey.</summary>
     public required PublicKey Author { get; init; }
 
@@ -167,7 +171,7 @@ public sealed class PictureEvent
     /// Returns <c>false</c> for any wrong-kind / malformed-tag input
     /// without throwing.
     /// </summary>
-    public static bool TryFromEvent(NostrEvent? ev, out PictureEvent? picture)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out PictureEvent? picture)
     {
         picture = null;
         if (ev is null || ev.Kind != Nip68Kinds.PicturePost)

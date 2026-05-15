@@ -19,6 +19,7 @@
 // from `title` (formal name) and `alt` (accessibility description).
 
 using System.Globalization;
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 using NostrNet.Nip19;
@@ -51,8 +52,11 @@ public static class Nip71Kinds
 }
 
 /// <summary>A typed view of a NIP-71 video event.</summary>
-public sealed class VideoEvent
+public sealed class VideoEvent : INostrTypedEvent<VideoEvent>
 {
+    /// <summary>Nostr kind(s) this type represents (normal + short, regular + addressable).</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 21, 22, 34235, 34236 };
+
     /// <summary>The author's pubkey.</summary>
     public required PublicKey Author { get; init; }
 
@@ -235,7 +239,7 @@ public sealed class VideoEvent
     }
 
     /// <summary>Tries to parse <paramref name="ev"/> as a NIP-71 video. Returns <c>false</c> for any non-NIP-71 kind or malformed tags.</summary>
-    public static bool TryFromEvent(NostrEvent? ev, out VideoEvent? video)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out VideoEvent? video)
     {
         video = null;
         if (ev is null || !Nip71Kinds.IsVideoKind(ev.Kind))

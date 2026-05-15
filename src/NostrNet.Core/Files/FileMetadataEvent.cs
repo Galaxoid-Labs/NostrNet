@@ -32,6 +32,7 @@
 //     ["service", <service-marker>]        optional (e.g. "nip96")
 
 using System.Globalization;
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 
@@ -45,8 +46,11 @@ public static class Nip94Kinds
 }
 
 /// <summary>A typed view of a NIP-94 file metadata event.</summary>
-public sealed class FileMetadata
+public sealed class FileMetadata : INostrTypedEvent<FileMetadata>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 1063 };
+
     /// <summary>The event's author.</summary>
     public required PublicKey Author { get; init; }
 
@@ -203,7 +207,7 @@ public sealed class FileMetadata
     }
 
     /// <summary>Tries to parse <paramref name="ev"/> as a NIP-94 file event. Returns <c>false</c> for non-1063 or malformed.</summary>
-    public static bool TryFromEvent(NostrEvent? ev, out FileMetadata? file)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out FileMetadata? file)
     {
         file = null;
         if (ev is null || ev.Kind != Nip94Kinds.FileMetadata)

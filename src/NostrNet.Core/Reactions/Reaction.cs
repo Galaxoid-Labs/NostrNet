@@ -63,8 +63,11 @@ public sealed record CustomEmoji(string Shortcode, string ImageUrl);
 /// <summary>
 /// A typed view of a NIP-25 kind-7 reaction event.
 /// </summary>
-public sealed class Reaction
+public sealed class Reaction : INostrTypedEvent<Reaction>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { 7 };
+
     /// <summary>The reactor's pubkey.</summary>
     public required PublicKey Reactor { get; init; }
 

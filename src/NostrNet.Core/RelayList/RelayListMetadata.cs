@@ -51,8 +51,11 @@ public sealed record RelayEntry(string Url, RelayUsage Usage);
 /// Use <see cref="FromEvent"/> to parse a received event or
 /// <see cref="Create"/> to build a new one.
 /// </remarks>
-public sealed class RelayListMetadata
+public sealed class RelayListMetadata : INostrTypedEvent<RelayListMetadata>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { Nip65Kinds.RelayListMetadata };
+
     /// <summary>The list author.</summary>
     public required PublicKey Owner { get; init; }
 

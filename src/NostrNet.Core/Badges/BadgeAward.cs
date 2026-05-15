@@ -14,6 +14,7 @@
 //
 // Reference: https://github.com/nostr-protocol/nips/blob/master/58.md
 
+using System.Diagnostics.CodeAnalysis;
 using NostrNet.Events;
 using NostrNet.Keys;
 
@@ -25,8 +26,11 @@ namespace NostrNet.Badges;
 public sealed record BadgeRecipient(PublicKey Pubkey, string? RecommendedRelay);
 
 /// <summary>A typed view of a NIP-58 kind-8 Badge Award event.</summary>
-public sealed class BadgeAward
+public sealed class BadgeAward : INostrTypedEvent<BadgeAward>
 {
+    /// <summary>Nostr kind(s) this type represents.</summary>
+    public static IReadOnlyList<int> Kinds { get; } = new[] { Nip58Kinds.BadgeAward };
+
     /// <summary>The issuer (the pubkey that signed the award event).</summary>
     public required PublicKey Issuer { get; init; }
 
@@ -116,7 +120,7 @@ public sealed class BadgeAward
     }
 
     /// <summary>Tries to parse <paramref name="ev"/> as a kind-8 Badge Award.</summary>
-    public static bool TryFromEvent(NostrEvent? ev, out BadgeAward? award)
+    public static bool TryFromEvent(NostrEvent? ev, [NotNullWhen(true)] out BadgeAward? award)
     {
         award = null;
         if (ev is null || ev.Kind != Nip58Kinds.BadgeAward)
