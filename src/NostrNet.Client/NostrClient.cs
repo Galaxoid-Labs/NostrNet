@@ -484,9 +484,11 @@ public sealed class NostrClient : IAsyncDisposable
         string? imageUrl = null,
         string? imageDim = null,
         IEnumerable<(string Url, string? Dim)>? thumbnails = null,
+        int powDifficulty = 0,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(identifier);
+        if (powDifficulty < 0) throw new ArgumentOutOfRangeException(nameof(powDifficulty));
         EnsureNotDisposed();
         var key = RequireKey(nameof(PublishBadgeDefinitionAsync));
 
@@ -499,7 +501,11 @@ public sealed class NostrClient : IAsyncDisposable
             foreach (var (url, dim) in thumbnails) builder.AddThumbnail(url, dim);
         }
 
-        var ev = builder.BuildAndSign(key);
+        // NIP-58 lets issuers embed NIP-13 PoW to give the definition
+        // a verifiable "minting cost." Skip the cost when difficulty is 0.
+        var ev = powDifficulty > 0
+            ? builder.BuildMineAndSign(key, powDifficulty, cancellationToken)
+            : builder.BuildAndSign(key);
         await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
         return BadgeDefinition.FromEvent(ev);
     }
@@ -513,10 +519,12 @@ public sealed class NostrClient : IAsyncDisposable
     public async Task<BadgeAward> AwardBadgeAsync(
         string badgeIdentifier,
         IEnumerable<PublicKey> recipients,
+        int powDifficulty = 0,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(badgeIdentifier);
         ArgumentNullException.ThrowIfNull(recipients);
+        if (powDifficulty < 0) throw new ArgumentOutOfRangeException(nameof(powDifficulty));
         EnsureNotDisposed();
         var key = RequireKey(nameof(AwardBadgeAsync));
 
@@ -533,7 +541,11 @@ public sealed class NostrClient : IAsyncDisposable
             throw new ArgumentException("At least one recipient is required.", nameof(recipients));
         }
 
-        var ev = builder.BuildAndSign(key);
+        // NIP-58 PoW is optional. When the caller asks for it, the award
+        // event id will sport `powDifficulty` leading zero bits.
+        var ev = powDifficulty > 0
+            ? builder.BuildMineAndSign(key, powDifficulty, cancellationToken)
+            : builder.BuildAndSign(key);
         await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
         return BadgeAward.FromEvent(ev);
     }

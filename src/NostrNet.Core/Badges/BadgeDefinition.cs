@@ -74,6 +74,21 @@ public sealed class BadgeDefinition
     /// <summary>Thumbnail images, one per <c>thumb</c> tag, in tag order.</summary>
     public IReadOnlyList<BadgeImage> Thumbnails { get; init; } = Array.Empty<BadgeImage>();
 
+    /// <summary>
+    /// NIP-13 leading-zero bits achieved by this event's id. NIP-58
+    /// allows issuers to embed PoW as a "minting cost" signal — this
+    /// is what they achieved.
+    /// </summary>
+    public required int PowDifficulty { get; init; }
+
+    /// <summary>
+    /// The target difficulty the issuer committed to via the
+    /// <c>nonce</c> tag's third value, if any. When this and
+    /// <see cref="PowDifficulty"/> both meet or exceed the same
+    /// threshold, the event satisfies the issuer's own commitment.
+    /// </summary>
+    public required int? CommittedPowDifficulty { get; init; }
+
     /// <summary>Returns the NIP-58 address string for this badge: <c>30009:pubkey-hex:identifier</c>.</summary>
     public string AddressString => $"{Nip58Kinds.BadgeDefinition}:{Issuer.ToHex()}:{Identifier}";
 
@@ -149,6 +164,8 @@ public sealed class BadgeDefinition
             Description = description,
             Image = image,
             Thumbnails = thumbs,
+            PowDifficulty = ProofOfWork.Difficulty(ev),
+            CommittedPowDifficulty = ProofOfWork.CommittedDifficulty(ev),
         };
     }
 
@@ -267,5 +284,22 @@ public sealed class BadgeDefinitionBuilder
     {
         ArgumentNullException.ThrowIfNull(key);
         return BuildUnsigned(key.PublicKey, DateTimeOffset.UtcNow.ToUnixTimeSeconds()).Sign(key);
+    }
+
+    /// <summary>
+    /// Mines the event to <paramref name="targetDifficulty"/> leading
+    /// zero bits per NIP-13, attaches the committed <c>nonce</c> tag,
+    /// and signs. NIP-58 notes badge issuers MAY embed PoW to give
+    /// badges a verifiable "minting cost" signal.
+    /// </summary>
+    /// <param name="key">The issuer's signing key.</param>
+    /// <param name="targetDifficulty">Leading-zero bits to mine for (0–256). 20-bit takes seconds on a laptop, 24-bit minutes, 28-bit ~an hour.</param>
+    /// <param name="cancellationToken">Cancels mining (e.g., to enforce a budget).</param>
+    public NostrEvent BuildMineAndSign(PrivateKey key, int targetDifficulty, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        var unsigned = BuildUnsigned(key.PublicKey, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var mined = ProofOfWork.Mine(unsigned, targetDifficulty, cancellationToken);
+        return mined.Sign(key);
     }
 }

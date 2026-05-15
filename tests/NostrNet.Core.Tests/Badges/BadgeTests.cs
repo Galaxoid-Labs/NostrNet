@@ -273,6 +273,56 @@ public class BadgeTests
     }
 
     [Fact]
+    public void Definition_BuildMineAndSign_AttachesPow()
+    {
+        using var issuer = PrivateKey.Generate();
+        // Low difficulty so the test stays fast; the spec doesn't
+        // mandate a particular target, just "MAY embed PoW."
+        const int target = 8;
+
+        var ev = BadgeDefinition.Create("legend")
+            .WithName("Legend")
+            .BuildMineAndSign(issuer, target);
+
+        Assert.True(ev.Verify());
+        var def = BadgeDefinition.FromEvent(ev);
+        Assert.True(def.PowDifficulty >= target,
+            $"Expected ≥{target} bits; got {def.PowDifficulty}.");
+        Assert.Equal(target, def.CommittedPowDifficulty);
+    }
+
+    [Fact]
+    public void Award_BuildMineAndSign_AttachesPow()
+    {
+        using var issuer = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+        const int target = 8;
+
+        var ev = BadgeAward.Create($"30009:{issuer.PublicKey.ToHex()}:legend")
+            .ToRecipient(bob.PublicKey)
+            .BuildMineAndSign(issuer, target);
+
+        Assert.True(ev.Verify());
+        var award = BadgeAward.FromEvent(ev);
+        Assert.True(award.PowDifficulty >= target);
+        Assert.Equal(target, award.CommittedPowDifficulty);
+    }
+
+    [Fact]
+    public void Definition_PowFields_AreZeroWhenNotMined()
+    {
+        using var issuer = PrivateKey.Generate();
+        var def = BadgeDefinition.FromEvent(
+            BadgeDefinition.Create("plain").BuildAndSign(issuer));
+        // Difficulty equals leading-zero bits of the id. For unmined
+        // events that's usually 0–3; just verify there's no committed
+        // target since we didn't set one.
+        Assert.Null(def.CommittedPowDifficulty);
+        Assert.True(def.PowDifficulty < 16,
+            "An unmined event should not coincidentally hit 16 leading zero bits.");
+    }
+
+    [Fact]
     public void TryFromEvent_ReturnsFalseForWrongKindAcrossAllThree()
     {
         using var k = PrivateKey.Generate();

@@ -42,6 +42,12 @@ public sealed class BadgeAward
     /// <summary>Every pubkey awarded by this event, in tag order. At least one entry.</summary>
     public required IReadOnlyList<BadgeRecipient> Recipients { get; init; }
 
+    /// <summary>NIP-13 leading-zero bits achieved by this award's id.</summary>
+    public required int PowDifficulty { get; init; }
+
+    /// <summary>Target difficulty the issuer committed to via the <c>nonce</c> tag, if any.</summary>
+    public required int? CommittedPowDifficulty { get; init; }
+
     /// <summary>Parses a kind-8 event into a typed <see cref="BadgeAward"/>.</summary>
     /// <exception cref="ArgumentException"><paramref name="ev"/> is not kind 8.</exception>
     /// <exception cref="FormatException">Required <c>a</c> or <c>p</c> tags are missing / malformed.</exception>
@@ -104,6 +110,8 @@ public sealed class BadgeAward
             Id = ev.Id,
             BadgeAddress = address,
             Recipients = recipients,
+            PowDifficulty = ProofOfWork.Difficulty(ev),
+            CommittedPowDifficulty = ProofOfWork.CommittedDifficulty(ev),
         };
     }
 
@@ -232,5 +240,25 @@ public sealed class BadgeAwardBuilder
     {
         ArgumentNullException.ThrowIfNull(key);
         return BuildUnsigned(key.PublicKey, DateTimeOffset.UtcNow.ToUnixTimeSeconds()).Sign(key);
+    }
+
+    /// <summary>
+    /// Mines the award to <paramref name="targetDifficulty"/> leading
+    /// zero bits per NIP-13, attaches the committed <c>nonce</c> tag,
+    /// and signs. NIP-58 allows issuers to embed PoW as a "minting
+    /// cost" signal on awards too.
+    /// </summary>
+    public NostrEvent BuildMineAndSign(PrivateKey key, int targetDifficulty, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        if (_recipients.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "BadgeAward requires at least one recipient — call ToRecipient(...) first.");
+        }
+
+        var unsigned = BuildUnsigned(key.PublicKey, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var mined = ProofOfWork.Mine(unsigned, targetDifficulty, cancellationToken);
+        return mined.Sign(key);
     }
 }
