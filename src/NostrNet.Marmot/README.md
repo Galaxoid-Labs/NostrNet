@@ -257,6 +257,39 @@ scheduler. Apps that need timer-based rotation can build their own
 loop on top of the manual `PublishKeyPackageAsync` /
 `RotateKeysAsync` APIs.
 
+### Out-of-order delivery + offline catch-up
+
+When a client comes back online — or just talks to a relay that
+batches historical events newest-first — kind-445 group events can
+arrive out of causal order. An application message from a new epoch
+may show up *before* the Commit that advances members into that
+epoch; without help, the receiver can't decrypt it (the new
+exporter doesn't exist yet) and drops it.
+
+`NostrMarmotClient` parks such events in a per-conversation buffer
+and replays them every time a Commit advances the local epoch:
+
+- Buffer is bounded (200 events per group, oldest evicted on
+  overflow) so an adversarial / spam-heavy relay can't grow memory
+  without limit.
+- Each parked event gets up to 8 retry passes; events that remain
+  undecryptable after that (true duplicates, payloads from before
+  we joined the group, etc.) are dropped.
+- Replays are sorted by `created_at` so chains of missed commits
+  walk forward correctly when a long-offline client reconnects.
+
+The behavior is transparent — apps don't see anything different from
+the inbound event stream. A delayed application message just shows
+up after its enabling Commit's `MarmotGroupStateChanged` event,
+rather than being silently lost.
+
+Caveat: MLS itself can't decrypt *past*-epoch messages once the
+group has rolled forward, beyond OpenMLS's `max_past_epochs`
+window. Park-and-retry helps with future-epoch deliveries that
+arrived early. A client who's been offline so long that the relay's
+event-cap truncates a critical Commit from history may need a fresh
+invite to recover.
+
 ## Low-level flow
 
 The flow always has the same shape regardless of MLS provider:

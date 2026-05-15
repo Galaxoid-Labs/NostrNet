@@ -143,6 +143,40 @@ public sealed partial class NostrMarmotClient
         }
     }
 
+    // ────────────────────────────────────────────────────────────
+    // Out-of-order / offline-catchup handling.
+    //
+    // When a relay delivers a group event from an epoch the
+    // receiver hasn't advanced into yet, `TryProcessMessageAsync`
+    // returns null because the local exporter for that epoch
+    // doesn't exist. This is common when:
+    //   - a relay batches historical events newest-first after the
+    //     client reconnects;
+    //   - app messages from a new epoch arrive before the Commit
+    //     that advances members into that epoch.
+    //
+    // We park the event in a per-group buffer and retry whenever a
+    // Commit lands (which is the only event that can move the
+    // receiver's epoch forward). Bounded by MaxParkedPerGroup and
+    // MaxRetriesPerParked so adversarial or genuinely stuck events
+    // can't grow the buffer without limit.
+    // ────────────────────────────────────────────────────────────
+
+    /// <summary>Cap on the per-group parked buffer; oldest evicted on overflow.</summary>
+    private const int MaxParkedPerGroup = 200;
+
+    /// <summary>How many epoch advances we'll retry a parked event before discarding it.</summary>
+    private const int MaxRetriesPerParked = 8;
+
+    private sealed class ParkedEvent
+    {
+        public required NostrEvent Event { get; init; }
+        public int Attempts { get; set; }
+    }
+
+    private readonly object _parkedLock = new();
+    private readonly Dictionary<string, List<ParkedEvent>> _parkedByGroup = new(StringComparer.OrdinalIgnoreCase);
+
     private async Task GroupPumpAsync(MarmotConversation conversation, CancellationToken ct)
     {
         string groupIdHex = Convert.ToHexStringLower(conversation.NostrGroupId);
@@ -175,53 +209,149 @@ public sealed partial class NostrMarmotClient
                     continue;
                 }
 
-                MarmotInboundMessage? processed;
-                try
+                bool epochAdvanced = await ProcessOneAsync(conversation, ev, ct).ConfigureAwait(false);
+                if (epochAdvanced)
                 {
-                    processed = await MarmotChat.TryProcessMessageAsync(_provider, conversation, ev, ct).ConfigureAwait(false);
+                    // The receiver just moved to a new epoch — replay
+                    // every previously-undecryptable event for this
+                    // group, in created_at order so any chain of
+                    // commits + app messages walks forward correctly.
+                    await ReplayParkedAsync(conversation, groupIdHex, ct).ConfigureAwait(false);
                 }
-                catch (Exception)
-                {
-                    // TryProcess swallows expected failures and returns null;
-                    // genuine exceptions (e.g., bad state) we just drop the event.
-                    continue;
-                }
-
-                if (processed is null)
-                {
-                    // Common case: epoch mismatch — relay delivered an
-                    // application message from a new epoch before the
-                    // Commit. The app may want to retry once the Commit
-                    // arrives; for now we just drop and let the Commit
-                    // (which will be delivered on the same subscription)
-                    // catch the receiver up.
-                    continue;
-                }
-
-                MarmotInboundEvent typed = processed.Kind switch
-                {
-                    MarmotMessageKind.Application => new MarmotMessageReceived(
-                        Conversation: conversation,
-                        Sender: processed.Sender,
-                        Plaintext: processed.Plaintext ?? string.Empty,
-                        ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt)),
-                    MarmotMessageKind.Commit => new MarmotGroupStateChanged(
-                        Conversation: conversation,
-                        Sender: processed.Sender),
-                    _ => null!,
-                };
-
-                if (typed is null)
-                {
-                    continue;
-                }
-
-                await _inboundChannel!.Writer.WriteAsync(typed, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
         {
             // expected during shutdown
+        }
+    }
+
+    /// <summary>
+    /// Tries to process one inbound kind-445 event. On success, emits the
+    /// typed inbound event. On undecryptable (most often: epoch
+    /// mismatch), parks the event for replay after the next Commit.
+    /// Returns <c>true</c> when the receiver's MLS epoch advanced.
+    /// </summary>
+    private async Task<bool> ProcessOneAsync(MarmotConversation conversation, NostrEvent ev, CancellationToken ct)
+    {
+        MarmotInboundMessage? processed;
+        try
+        {
+            processed = await MarmotChat.TryProcessMessageAsync(_provider, conversation, ev, ct).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Genuine processing exception (bad state, malformed
+            // payload that survived TryProcess's catches). Drop —
+            // re-parking would just loop.
+            return false;
+        }
+
+        if (processed is null)
+        {
+            ParkEvent(conversation.NostrGroupId, ev);
+            return false;
+        }
+
+        MarmotInboundEvent? typed = processed.Kind switch
+        {
+            MarmotMessageKind.Application => new MarmotMessageReceived(
+                Conversation: conversation,
+                Sender: processed.Sender,
+                Plaintext: processed.Plaintext ?? string.Empty,
+                ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt)),
+            MarmotMessageKind.Commit => new MarmotGroupStateChanged(
+                Conversation: conversation,
+                Sender: processed.Sender),
+            _ => null,
+        };
+
+        if (typed is not null)
+        {
+            await _inboundChannel!.Writer.WriteAsync(typed, ct).ConfigureAwait(false);
+        }
+
+        return processed.EpochAdvanced;
+    }
+
+    private void ParkEvent(byte[] groupId, NostrEvent ev)
+    {
+        string key = Convert.ToHexStringLower(groupId);
+        lock (_parkedLock)
+        {
+            if (!_parkedByGroup.TryGetValue(key, out var list))
+            {
+                list = new List<ParkedEvent>();
+                _parkedByGroup[key] = list;
+            }
+
+            // De-dup by event id so a relay redelivering the same
+            // event during reconnect doesn't bloat the buffer.
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i].Event.Id.Equals(ev.Id))
+                {
+                    return;
+                }
+            }
+
+            // Cap: evict oldest when full. 200 events covers a long
+            // offline window without unbounded memory growth.
+            if (list.Count >= MaxParkedPerGroup)
+            {
+                list.RemoveAt(0);
+            }
+
+            list.Add(new ParkedEvent { Event = ev, Attempts = 0 });
+        }
+    }
+
+    private async Task ReplayParkedAsync(MarmotConversation conversation, string groupIdHex, CancellationToken ct)
+    {
+        // Drain the current buffer, sort by created_at so causal
+        // order is preserved across replays, then re-feed every
+        // event through ProcessOneAsync. Anything that's STILL
+        // undecryptable goes back into the buffer (via ParkEvent
+        // inside ProcessOneAsync), with the attempt counter bumped.
+        //
+        // If a replay produces another epoch advance, we recurse —
+        // bounded by the parked retry counter — so a chain of
+        // missed commits + app messages walks forward in one go.
+        List<ParkedEvent> snapshot;
+        lock (_parkedLock)
+        {
+            if (!_parkedByGroup.TryGetValue(groupIdHex, out var list) || list.Count == 0)
+            {
+                return;
+            }
+
+            snapshot = list.ToList();
+            list.Clear();
+        }
+
+        snapshot.Sort((a, b) => a.Event.CreatedAt.CompareTo(b.Event.CreatedAt));
+
+        bool advancedDuringReplay = false;
+        foreach (var parked in snapshot)
+        {
+            if (parked.Attempts >= MaxRetriesPerParked)
+            {
+                // Give up on this one — likely a replayed duplicate,
+                // a malformed payload, or an event from before our
+                // join that we'll never decrypt.
+                continue;
+            }
+
+            parked.Attempts++;
+            bool advanced = await ProcessOneAsync(conversation, parked.Event, ct).ConfigureAwait(false);
+            advancedDuringReplay = advancedDuringReplay || advanced;
+        }
+
+        // If we just advanced the epoch again during replay, anything
+        // that was still parked might now be decryptable.
+        if (advancedDuringReplay)
+        {
+            await ReplayParkedAsync(conversation, groupIdHex, ct).ConfigureAwait(false);
         }
     }
 

@@ -322,6 +322,82 @@ public class NostrMarmotClientTests
     }
 
     [Fact]
+    public async Task ParkedAppMessage_DecryptsAfterEnablingCommit_OutOfOrderDelivery()
+    {
+        // Simulates the offline-catchup case: a relay delivers an
+        // application message from a new epoch BEFORE the Commit that
+        // advanced everyone into that epoch. The parked-message logic
+        // in GroupPumpAsync should buffer the un-decryptable message,
+        // process the Commit when it arrives, and then replay the
+        // buffered message at the new epoch.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        using var aliceProv = new OpenMlsProvider();
+        using var bobProv = new OpenMlsProvider();
+        var relay = new FakeRelay();
+        var advertise = new[] { FakeRelayUri };
+
+        // Set up the conversation via the low-level helpers so we can
+        // build the events we want WITHOUT them being delivered to
+        // bob immediately by a live subscription.
+        var bobKp = await MarmotChat.BuildKeyPackageEventAsync(
+            bobProv, bobKey, slot: null, advertise);
+        var started = await MarmotChat.StartConversationAsync(
+            aliceProv, aliceKey, bobKp, "park-test", advertise);
+        var bobConvo = await MarmotChat.TryAcceptInviteAsync(
+            bobProv, bobKey, started.WelcomeGiftWrap);
+        Assert.NotNull(bobConvo);
+
+        // Alice rotates → Commit event + advance Alice to next epoch.
+        var rotated = await MarmotChat.RotateKeysAsync(aliceProv, started.Conversation);
+        // Alice sends one message ENCRYPTED AT THE NEW EPOCH.
+        var newEpochMessage = await MarmotChat.EncryptMessageAsync(
+            aliceProv, started.Conversation, aliceKey, "after the rotation");
+
+        // Publish to the relay in causal order, but flip the delivery
+        // flag so a new subscriber drains the backlog newest-first.
+        await relay.PublishAsync(rotated.CommitGroupEvent);
+        await relay.PublishAsync(newEpochMessage);
+        relay.ReverseBacklogOrder = true;
+
+        // Bob spins up his client now. AutoPublish + RotateAfterAccept
+        // would inject extra events into the relay; turn them off so
+        // the test's backlog matches our expectations.
+        await using var bob = await NostrMarmotClient.Builder(bobKey, bobProv)
+            .UseRelays(FakeRelayUri)
+            .UseRelayBridge(relay)
+            .AutoPublishKeyPackage(false)
+            .RotateKeyPackageAfterAccept(false)
+            .ConnectAsync();
+
+        await bob.LoadExistingConversationsAsync();
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var inbound = bob.SubscribeAsync(streamCts.Token);
+
+        bool sawState = false;
+        bool sawMessage = false;
+        await foreach (var ev in inbound.WithCancellation(streamCts.Token))
+        {
+            switch (ev)
+            {
+                case MarmotGroupStateChanged:
+                    sawState = true;
+                    break;
+                case MarmotMessageReceived m when m.Plaintext == "after the rotation":
+                    sawMessage = true;
+                    break;
+            }
+
+            if (sawState && sawMessage) break;
+        }
+
+        Assert.True(sawState, "Commit (epoch advance) should be observed");
+        Assert.True(sawMessage,
+            "Parked new-epoch message should be replayed after the Commit advances Bob's epoch");
+    }
+
+    [Fact]
     public async Task RotateAfterAccept_RepublishesKeyPackage_AfterJoin()
     {
         using var aliceKey = PrivateKey.Generate();
@@ -460,6 +536,14 @@ public class NostrMarmotClientTests
             }
         }
 
+        /// <summary>
+        /// When true, new subscribers drain the historical backlog in
+        /// reverse insertion order. Used by the park-and-retry test to
+        /// simulate a misbehaving relay that delivers a new-epoch
+        /// message before its enabling Commit.
+        /// </summary>
+        public bool ReverseBacklogOrder { get; set; }
+
         public Task PublishAsync(NostrEvent ev, CancellationToken ct = default)
         {
             ArgumentNullException.ThrowIfNull(ev);
@@ -491,6 +575,11 @@ public class NostrMarmotClientTests
             {
                 snapshot = _stored.ToArray();
                 _subscribers.TryAdd(sub, 0);
+            }
+
+            if (ReverseBacklogOrder)
+            {
+                Array.Reverse(snapshot);
             }
 
             try
