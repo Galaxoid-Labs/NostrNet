@@ -133,6 +133,19 @@ public class RelayInformationTests
     }
 
     [Fact]
+    public void SupportsSearch_ReflectsNip50InSupportedNips()
+    {
+        var with50 = RelayInformation.Parse("""{"supported_nips":[1,50]}""");
+        Assert.True(with50.SupportsSearch);
+
+        var without50 = RelayInformation.Parse("""{"supported_nips":[1,11,42]}""");
+        Assert.False(without50.SupportsSearch);
+
+        var noNipsAtAll = RelayInformation.Parse("""{"name":"x"}""");
+        Assert.False(noNipsAtAll.SupportsSearch);
+    }
+
+    [Fact]
     public void SupportsNip_FalseWhenListAbsent()
     {
         var info = RelayInformation.Parse("{}");

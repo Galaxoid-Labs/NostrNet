@@ -93,6 +93,7 @@ without either.
 | 38 | user statuses (kind 30315, parameterized replaceable by type) | Core/UserStatuses/ |
 | 42 | client-relay AUTH (challenge capture + auth event + send) | Core/Auth/ + Relay |
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
+| 50 | full-text search (filter `search` field + capability check) | Relay/Filter.cs + Relay/RelayInformation.cs |
 | 51 | lists & sets (public + NIP-44 self-encrypted private items) | Crypto/Lists/ |
 | 59 | gift wrap (used by NIP-17 and Marmot Welcomes) | Crypto/Nip59.cs |
 | 65 | relay list metadata (kind 10002) | Core/RelayList/ |

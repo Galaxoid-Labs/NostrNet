@@ -95,4 +95,51 @@ public class FilterTests
         Assert.Equal(100, f2.Limit);
         Assert.Equal(f1.Kinds, f2.Kinds);
     }
+
+    [Fact]
+    public void Search_IsEmittedAsTopLevelField()
+    {
+        var f = new Filter { Search = "best nostr apps" };
+        Assert.Contains("\"search\":\"best nostr apps\"", f.ToJson());
+    }
+
+    [Fact]
+    public void Search_OmittedWhenNullOrEmpty()
+    {
+        Assert.DoesNotContain("search", new Filter { Limit = 1 }.ToJson());
+        Assert.DoesNotContain("search", new Filter { Search = "" }.ToJson());
+    }
+
+    [Fact]
+    public void Search_CombinesWithStructuredFilters()
+    {
+        // NIP-50 explicitly allows combining search with other filter
+        // fields; verify both serialize side by side.
+        var f = new Filter
+        {
+            Kinds = new[] { 1 },
+            Limit = 50,
+            Search = "purple include:spam",
+        };
+        var json = f.ToJson();
+        Assert.Contains("\"kinds\":[1]", json);
+        Assert.Contains("\"limit\":50", json);
+        Assert.Contains("\"search\":\"purple include:spam\"", json);
+    }
+
+    [Fact]
+    public void ByText_ConstructsSearchOnlyFilter()
+    {
+        var f = Filter.ByText("orange");
+        Assert.Equal("orange", f.Search);
+        Assert.Null(f.Kinds);
+        Assert.Null(f.Authors);
+    }
+
+    [Fact]
+    public void ByText_RejectsNullOrEmpty()
+    {
+        Assert.Throws<ArgumentException>(() => Filter.ByText(""));
+        Assert.Throws<ArgumentNullException>(() => Filter.ByText(null!));
+    }
 }

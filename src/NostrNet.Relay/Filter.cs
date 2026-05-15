@@ -47,6 +47,24 @@ public sealed record Filter
     /// <summary>Maximum number of stored events to return.</summary>
     public int? Limit { get; init; }
 
+    /// <summary>
+    /// NIP-50 full-text search query. When set, the relay matches events
+    /// against this string (typically against <see cref="NostrEvent.Content"/>,
+    /// though relays MAY include other fields per their own policy).
+    /// May embed extension modifiers as space-separated <c>key:value</c>
+    /// pairs — well-known examples include <c>include:spam</c> to bypass
+    /// the default spam filter and <c>domain:&lt;host&gt;</c> to scope
+    /// matches to a NIP-05 host. Relays SHOULD silently ignore unknown
+    /// modifiers, so combining several is forward-compatible.
+    /// </summary>
+    /// <remarks>
+    /// Only relays that advertise NIP-50 in their NIP-11 document honor
+    /// this field; others ignore it. Pair with <see cref="Kinds"/> and
+    /// the standard structured filters to constrain the result set —
+    /// most relays cap pure-search queries quite aggressively.
+    /// </remarks>
+    public string? Search { get; init; }
+
     /// <summary>Serializes the filter to its NIP-01 JSON representation.</summary>
     public string ToJson()
     {
@@ -98,7 +116,23 @@ public sealed record Filter
             writer.WriteNumber("limit", limit);
         }
 
+        if (!string.IsNullOrEmpty(Search))
+        {
+            writer.WriteString("search", Search);
+        }
+
         writer.WriteEndObject();
+    }
+
+    /// <summary>
+    /// Convenience constructor: a NIP-50 search filter for free-form
+    /// text. Combine with <c>with</c> expressions to add <see cref="Kinds"/>,
+    /// <see cref="Authors"/>, <see cref="Limit"/>, etc.
+    /// </summary>
+    public static Filter ByText(string query)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(query);
+        return new Filter { Search = query };
     }
 
     /// <summary>

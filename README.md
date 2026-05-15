@@ -39,6 +39,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [38](https://github.com/nostr-protocol/nips/blob/master/38.md) | User statuses (kind 30315) — general activity + currently-playing music with NIP-40 expiration |
 | [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | Client-relay AUTH — auto-auth + auto-retry on `auth-required` by default |
 | [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | v2 encrypted payloads (ChaCha20 + HMAC-SHA256 + HKDF) |
+| [50](https://github.com/nostr-protocol/nips/blob/master/50.md) | Full-text search (`Filter.Search` + `NostrClient.SearchAsync`, with NIP-11 capability check) |
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets — public + NIP-44 self-encrypted private items |
 | [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap (used by NIP-17) |
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002 read/write relay advertisements) |

@@ -108,6 +108,15 @@ public sealed record RelayInformation
         => SupportedNips is not null && SupportedNips.Contains(nipNumber);
 
     /// <summary>
+    /// True if this relay advertises NIP-50 search capability. Callers
+    /// sending a <see cref="Filter.Search"/> query SHOULD check this
+    /// before issuing — relays that don't support NIP-50 silently
+    /// ignore the field and return their default-filter result set,
+    /// which can produce surprising "everything from this kind" floods.
+    /// </summary>
+    public bool SupportsSearch => SupportsNip(50);
+
+    /// <summary>
     /// Fetches the NIP-11 Relay Information Document for the relay at
     /// <paramref name="relayUri"/>. The URI may use any of the
     /// <c>wss</c>, <c>ws</c>, <c>https</c>, or <c>http</c> schemes; ws/wss

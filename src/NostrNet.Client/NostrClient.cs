@@ -327,6 +327,45 @@ public sealed class NostrClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Issues a NIP-50 full-text search across the configured relays.
+    /// Yields each matching event as it arrives. <paramref name="query"/>
+    /// is sent verbatim in the filter's <c>search</c> field — embed
+    /// modifier pairs (<c>include:spam</c>, <c>domain:nip05.host</c>,
+    /// etc.) as space-separated tokens.
+    /// </summary>
+    /// <param name="query">Free-form search string. May contain NIP-50 modifiers.</param>
+    /// <param name="kinds">Optional event kinds to constrain the search; most relays cap unconstrained search-only queries.</param>
+    /// <param name="authors">Optional pubkey hex filter (use this for "search this user's posts").</param>
+    /// <param name="limit">Max stored events to return (per relay).</param>
+    /// <param name="cancellationToken">Cancels the subscription / stream.</param>
+    /// <remarks>
+    /// Only relays that advertise NIP-50 in their NIP-11 document honor
+    /// the search field; others may return their default-filter result
+    /// set (e.g. every kind-1 note). Use
+    /// <see cref="RelayInformation.SupportsSearch"/> to gate the call.
+    /// </remarks>
+    public IAsyncEnumerable<ReceivedEvent> SearchAsync(
+        string query,
+        IReadOnlyList<int>? kinds = null,
+        IReadOnlyList<PublicKey>? authors = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(query);
+        EnsureNotDisposed();
+
+        var filter = new Filter
+        {
+            Search = query,
+            Kinds = kinds,
+            Authors = authors?.Select(a => a.ToHex()).ToArray(),
+            Limit = limit,
+        };
+
+        return SubscribeAsync(new[] { filter }, cancellationToken);
+    }
+
+    /// <summary>
     /// Publishes a NIP-38 user-status update (kind 30315) under the
     /// given <paramref name="type"/> slot (e.g.
     /// <see cref="UserStatusTypes.General"/> or
