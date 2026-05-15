@@ -221,6 +221,42 @@ common in long-lived inboxes:
 Apps should treat `null` as "skip silently" rather than as an
 error to surface, the way the `marmot-chat` sample does.
 
+### Automatic KeyPackage rotation
+
+MIP-00 says clients SHOULD rotate KeyPackages periodically and after
+they're consumed. `NostrMarmotClient` does this on app-launch
+cadence (no background timers, no scheduler infrastructure):
+
+- **On `ConnectAsync`** the builder fires `PublishKeyPackageAsync`
+  immediately after the underlying `NostrClient` connects. The
+  deterministic per-identity slot (sha256 of pubkey + a fixed domain
+  separator) means the new event *replaces* the previous one on
+  every cooperating relay rather than orphaning init keys.
+- **After every successful `AcceptInviteAsync`** the client kicks off
+  a background `PublishKeyPackageAsync` so the KeyPackage the new
+  peer just consumed gets replaced. Anyone caching it on a relay
+  receives the fresh one on next fetch; the old init key never
+  serves a second inviter.
+
+Failures are best-effort — a relay hiccup at startup or after a
+join doesn't break the active session. The most recent error (if
+any) is exposed via `NostrMarmotClient.LastAutoPublishError` for
+apps that care about diagnostics. To turn either behavior off:
+
+```csharp
+NostrMarmotClient.Builder(key, provider)
+    .UseRelays("wss://relay.example")
+    .AutoPublishKeyPackage(false)         // don't publish on Connect
+    .RotateKeyPackageAfterAccept(false)   // don't rotate after a join
+    .ConnectAsync();
+```
+
+This matches WN's pattern (`key_package_maintenance` republishes on
+boot, plus inline-rotate-on-consume), minus the periodic 10-minute
+scheduler. Apps that need timer-based rotation can build their own
+loop on top of the manual `PublishKeyPackageAsync` /
+`RotateKeysAsync` APIs.
+
 ## Low-level flow
 
 The flow always has the same shape regardless of MLS provider:

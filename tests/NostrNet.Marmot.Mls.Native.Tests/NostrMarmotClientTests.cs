@@ -276,11 +276,105 @@ public class NostrMarmotClientTests
         Assert.False(more);
     }
 
+    // Tests opt out of auto-publish + rotate-after-accept so they can
+    // assert deterministic KeyPackage IDs and inbound-event counts.
+    // The auto-rotation behavior has its own dedicated test below.
     private static Task<NostrMarmotClient> BuildAsync(PrivateKey identityKey, FakeRelay relay) =>
         NostrMarmotClient.Builder(identityKey, new OpenMlsProvider())
             .UseRelays(FakeRelayUri)
             .UseRelayBridge(relay)
+            .AutoPublishKeyPackage(false)
+            .RotateKeyPackageAfterAccept(false)
             .ConnectAsync();
+
+    [Fact]
+    public async Task AutoPublishKeyPackage_True_PublishesOnConnect()
+    {
+        using var key = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var client = await NostrMarmotClient.Builder(key, new OpenMlsProvider())
+            .UseRelays(FakeRelayUri)
+            .UseRelayBridge(relay)
+            // default: AutoPublishKeyPackage(true)
+            .ConnectAsync();
+
+        // The relay should have seen exactly one kind-30443 event from us.
+        Assert.Contains(relay.AllPublished, ev =>
+            ev.Kind == NostrNet.Marmot.MarmotKinds.KeyPackage && ev.PubKey.Equals(key.PublicKey));
+        Assert.Null(client.LastAutoPublishError);
+    }
+
+    [Fact]
+    public async Task AutoPublishKeyPackage_False_SkipsPublish()
+    {
+        using var key = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var client = await NostrMarmotClient.Builder(key, new OpenMlsProvider())
+            .UseRelays(FakeRelayUri)
+            .UseRelayBridge(relay)
+            .AutoPublishKeyPackage(false)
+            .ConnectAsync();
+
+        Assert.DoesNotContain(relay.AllPublished, ev =>
+            ev.Kind == NostrNet.Marmot.MarmotKinds.KeyPackage && ev.PubKey.Equals(key.PublicKey));
+    }
+
+    [Fact]
+    public async Task RotateAfterAccept_RepublishesKeyPackage_AfterJoin()
+    {
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        // Bob runs with rotate-after-accept enabled (default).
+        await using var alice = await NostrMarmotClient.Builder(aliceKey, new OpenMlsProvider())
+            .UseRelays(FakeRelayUri)
+            .UseRelayBridge(relay)
+            .AutoPublishKeyPackage(false)
+            .RotateKeyPackageAfterAccept(false)
+            .ConnectAsync();
+        await using var bob = await NostrMarmotClient.Builder(bobKey, new OpenMlsProvider())
+            .UseRelays(FakeRelayUri)
+            .UseRelayBridge(relay)
+            // defaults: both auto-rotations enabled
+            .ConnectAsync();
+
+        // Bob's connect-time auto-publish.
+        int kpsAtConnect = relay.AllPublished
+            .Count(ev => ev.Kind == NostrNet.Marmot.MarmotKinds.KeyPackage && ev.PubKey.Equals(bobKey.PublicKey));
+        Assert.Equal(1, kpsAtConnect);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        // Alice fetches Bob's KP and starts a chat.
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        Assert.NotNull(bobKp);
+        _ = await alice.StartConversationAsync(bobKp!, "rot-test");
+
+        // Wait for Bob's auto-accept path to run, then for the
+        // rotate-after-accept fire-and-forget task to flush.
+        var invite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        var bobConvo = await bob.AcceptInviteAsync(invite);
+        Assert.NotNull(bobConvo);
+
+        // Poll for the rotated KP — the Task.Run scheduler may not
+        // have flushed before the await unblocked.
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
+        int finalCount = kpsAtConnect;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            finalCount = relay.AllPublished
+                .Count(ev => ev.Kind == NostrNet.Marmot.MarmotKinds.KeyPackage && ev.PubKey.Equals(bobKey.PublicKey));
+            if (finalCount > kpsAtConnect) break;
+            await Task.Delay(25);
+        }
+
+        Assert.True(finalCount > kpsAtConnect,
+            $"Expected a rotated KP after AcceptInvite; saw {finalCount} (started at {kpsAtConnect}).");
+    }
 
     private static async Task<T> NextOfTypeAsync<T>(IAsyncEnumerable<MarmotInboundEvent> source)
         where T : MarmotInboundEvent
@@ -352,6 +446,19 @@ public class NostrMarmotClientTests
         private readonly object _lock = new();
         private readonly List<NostrEvent> _stored = new();
         private readonly ConcurrentDictionary<Subscriber, byte> _subscribers = new();
+
+        /// <summary>
+        /// Snapshot copy of every event the resolver has ever
+        /// published. Reads are lock-free at the point of inspection
+        /// because we copy under the lock.
+        /// </summary>
+        public IReadOnlyList<NostrEvent> AllPublished
+        {
+            get
+            {
+                lock (_lock) return _stored.ToArray();
+            }
+        }
 
         public Task PublishAsync(NostrEvent ev, CancellationToken ct = default)
         {

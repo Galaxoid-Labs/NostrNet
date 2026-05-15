@@ -33,6 +33,7 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
     private readonly PrivateKey _identityKey;
     private readonly IReadOnlyList<string> _advertisedRelays;
     private readonly NostrClient? _ownedClient;
+    private readonly bool _rotateAfterAccept;
     private bool _disposed;
 
     internal NostrMarmotClient(
@@ -40,14 +41,27 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
         IMarmotMlsProvider provider,
         PrivateKey identityKey,
         IReadOnlyList<string> advertisedRelays,
-        NostrClient? ownedClient)
+        NostrClient? ownedClient,
+        bool rotateAfterAccept)
     {
         _relay = relay ?? throw new ArgumentNullException(nameof(relay));
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         _identityKey = identityKey ?? throw new ArgumentNullException(nameof(identityKey));
         _advertisedRelays = advertisedRelays ?? Array.Empty<string>();
         _ownedClient = ownedClient;
+        _rotateAfterAccept = rotateAfterAccept;
     }
+
+    /// <summary>
+    /// The most recent failure (if any) from the auto-publish step
+    /// triggered by <c>AutoPublishKeyPackage</c> on the builder or
+    /// from rotate-after-accept. Apps that care can surface it; most
+    /// can ignore — a missing KeyPackage on relays only impacts
+    /// inbound invites, not existing conversations.
+    /// </summary>
+    public Exception? LastAutoPublishError { get; private set; }
+
+    internal void SetAutoPublishError(Exception? ex) => LastAutoPublishError = ex;
 
     /// <summary>The local Nostr identity (public counterpart of the key passed to <c>Builder</c>).</summary>
     public PublicKey Identity => _identityKey.PublicKey;
@@ -211,6 +225,30 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
         }
 
         TrackConversation(convo);
+
+        // The KeyPackage that addressed this Welcome is now "consumed"
+        // — once a peer has used it, its init key shouldn't be served
+        // to anyone else. Publish a fresh KeyPackage under the same
+        // deterministic slot so the relay replaces the old event with
+        // an init key the new peer can't address. Best-effort: a
+        // failure here only impacts future invites, not the chat we
+        // just joined.
+        if (_rotateAfterAccept)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await PublishKeyPackageAsync(ct: ct).ConfigureAwait(false);
+                    LastAutoPublishError = null;
+                }
+                catch (Exception ex)
+                {
+                    LastAutoPublishError = ex;
+                }
+            }, ct);
+        }
+
         return convo;
     }
 
@@ -383,6 +421,8 @@ public sealed class NostrMarmotClientBuilder
     private readonly List<string> _relays = new();
     private IMarmotRelay? _relayBridge;
     private bool _autoAuth = true;
+    private bool _autoPublishKeyPackage = true;
+    private bool _rotateAfterAccept = true;
 
     internal NostrMarmotClientBuilder(PrivateKey identityKey, IMarmotMlsProvider provider)
     {
@@ -406,6 +446,37 @@ public sealed class NostrMarmotClientBuilder
     }
 
     /// <summary>
+    /// Controls whether <see cref="ConnectAsync"/> publishes a fresh
+    /// KeyPackage to the configured relays immediately after the
+    /// underlying <see cref="NostrClient"/> connects. Default: <c>true</c>.
+    /// MIP-00 says clients SHOULD rotate KeyPackages periodically; an
+    /// app-launch publish is the simplest spec-conforming cadence and
+    /// avoids the timer machinery a true scheduler would need. Failures
+    /// are swallowed and surfaced via
+    /// <see cref="NostrMarmotClient.LastAutoPublishError"/>.
+    /// </summary>
+    public NostrMarmotClientBuilder AutoPublishKeyPackage(bool enabled)
+    {
+        _autoPublishKeyPackage = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Controls whether <see cref="NostrMarmotClient.AcceptInviteAsync"/>
+    /// publishes a replacement KeyPackage after a successful join.
+    /// Default: <c>true</c>. The KeyPackage that addressed the
+    /// Welcome we just consumed should not be served to anyone else;
+    /// the deterministic slot id (<see cref="MarmotChat.BuildKeyPackageEventAsync"/>)
+    /// means the new publish replaces the old event under
+    /// <c>(kind, pubkey, d)</c> on every cooperating relay.
+    /// </summary>
+    public NostrMarmotClientBuilder RotateKeyPackageAfterAccept(bool enabled)
+    {
+        _rotateAfterAccept = enabled;
+        return this;
+    }
+
+    /// <summary>
     /// Supplies a custom <see cref="IMarmotRelay"/> instead of letting
     /// the builder construct a <see cref="NostrClient"/>. Mainly for
     /// tests; production code should use <see cref="UseRelays"/>.
@@ -425,23 +496,43 @@ public sealed class NostrMarmotClientBuilder
     /// </summary>
     public async Task<NostrMarmotClient> ConnectAsync(CancellationToken ct = default)
     {
+        NostrMarmotClient marmot;
         if (_relayBridge is not null)
         {
-            return new NostrMarmotClient(_relayBridge, _provider, _identityKey, _relays, ownedClient: null);
+            marmot = new NostrMarmotClient(_relayBridge, _provider, _identityKey, _relays, ownedClient: null, _rotateAfterAccept);
         }
-
-        if (_relays.Count == 0)
+        else
         {
-            throw new InvalidOperationException(
-                "Provide at least one relay via UseRelays(...) or supply a custom IMarmotRelay via UseRelayBridge(...).");
+            if (_relays.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "Provide at least one relay via UseRelays(...) or supply a custom IMarmotRelay via UseRelayBridge(...).");
+            }
+
+            var clientBuilder = NostrClient.Builder(_identityKey)
+                .UseRelays(_relays.ToArray())
+                .WithAutoAuth(_autoAuth);
+
+            var client = await clientBuilder.ConnectAsync(ct).ConfigureAwait(false);
+            var bridge = new NostrClientMarmotRelay(client);
+            marmot = new NostrMarmotClient(bridge, _provider, _identityKey, _relays, ownedClient: client, _rotateAfterAccept);
         }
 
-        var clientBuilder = NostrClient.Builder(_identityKey)
-            .UseRelays(_relays.ToArray())
-            .WithAutoAuth(_autoAuth);
+        if (_autoPublishKeyPackage)
+        {
+            // Best-effort: a relay hiccup at startup shouldn't block
+            // the whole app, but the error is surfaced via
+            // LastAutoPublishError so curious callers can check.
+            try
+            {
+                await marmot.PublishKeyPackageAsync(ct: ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                marmot.SetAutoPublishError(ex);
+            }
+        }
 
-        var client = await clientBuilder.ConnectAsync(ct).ConfigureAwait(false);
-        var bridge = new NostrClientMarmotRelay(client);
-        return new NostrMarmotClient(bridge, _provider, _identityKey, _relays, ownedClient: client);
+        return marmot;
     }
 }
