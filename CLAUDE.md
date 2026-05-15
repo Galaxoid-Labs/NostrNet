@@ -142,6 +142,20 @@ without either.
 
 **Deferred:** NIP-07/46 (signers), NIP-57 zaps. Mechanical once needed.
 
+**Deferred behaviors:**
+
+- **NIP-65-aware routing for NIP-17 DMs.** `SendDirectMessageAsync`
+  currently publishes both the recipient-wrap and the self-wrap to every
+  relay in the pool (since v0.1.0-preview6). A proper implementation
+  would fetch the recipient's kind-10002 inbox-relay list and route the
+  recipient-wrap there, route the self-wrap to the sender's own inbox
+  list, and only fall back to the pool relays if either list is missing.
+  Not painful today because most apps configure a small shared relay set
+  anyway; will become user-visible if NostrNet is used in clients that
+  follow strict inbox-relay discipline. The NIP-65 read/decode plumbing
+  is already present (`Core/RelayList/`); what's missing is the
+  send-time routing layer.
+
 ## Marmot MIPs (MLS over Nostr)
 
 | MIP | What | Where |
