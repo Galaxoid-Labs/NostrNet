@@ -90,6 +90,7 @@ without either.
 | 22 | threaded comments (kind 1111; E/A/I + e/a/i tag pairs) | Core/Comments/ |
 | 23 | long-form articles & drafts (30023/30024) | Core/Articles/ |
 | 25 | reactions (kind 7) with custom-emoji support | Core/Reactions/ |
+| 38 | user statuses (kind 30315, parameterized replaceable by type) | Core/UserStatuses/ |
 | 42 | client-relay AUTH (challenge capture + auth event + send) | Core/Auth/ + Relay |
 | 44 | v2 encrypted payloads | Crypto/Nip44.cs |
 | 51 | lists & sets (public + NIP-44 self-encrypted private items) | Crypto/Lists/ |

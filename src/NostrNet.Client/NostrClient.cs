@@ -7,6 +7,7 @@ using NostrNet.Keys;
 using NostrNet.Pictures;
 using NostrNet.Relay;
 using NostrNet.Reposts;
+using NostrNet.UserStatuses;
 
 namespace NostrNet.Client;
 
@@ -323,6 +324,107 @@ public sealed class NostrClient : IAsyncDisposable
         }.Sign(key);
 
         return await _pool.PublishAsync(ev, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Publishes a NIP-38 user-status update (kind 30315) under the
+    /// given <paramref name="type"/> slot (e.g.
+    /// <see cref="UserStatusTypes.General"/> or
+    /// <see cref="UserStatusTypes.Music"/>). The event replaces any
+    /// prior status of the same type for this pubkey on cooperating
+    /// relays. Pass an empty <paramref name="content"/> to clear the
+    /// slot.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
+    public async Task<IReadOnlyDictionary<Uri, PublishResult>> PublishUserStatusAsync(
+        string type,
+        string content,
+        DateTimeOffset? expiration = null,
+        string? referenceUrl = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(type);
+        ArgumentNullException.ThrowIfNull(content);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(PublishUserStatusAsync));
+
+        var builder = UserStatus.Create(type).WithContent(content);
+        if (expiration is DateTimeOffset exp) builder.WithExpiration(exp);
+        if (referenceUrl is not null) builder.WithReference(referenceUrl);
+
+        return await _pool.PublishAsync(builder.BuildAndSign(key), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Convenience: publishes an empty-content NIP-38 event for the
+    /// given <paramref name="type"/> slot. Per spec, an empty status
+    /// signals "clear" — clients that render statuses should drop
+    /// the slot's value when they see this event.
+    /// </summary>
+    public Task<IReadOnlyDictionary<Uri, PublishResult>> ClearUserStatusAsync(
+        string type,
+        CancellationToken cancellationToken = default)
+        => PublishUserStatusAsync(type, string.Empty, cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// Fetches the most recent NIP-38 status of the given
+    /// <paramref name="type"/> for <paramref name="owner"/>. Returns
+    /// <c>null</c> when no kind-30315 event was returned before
+    /// <paramref name="timeout"/> elapsed. Expired statuses are
+    /// returned as-is — callers should check
+    /// <see cref="UserStatus.HasExpired"/> if they want to filter.
+    /// </summary>
+    public async Task<UserStatus?> TryGetUserStatusAsync(
+        PublicKey owner,
+        string type,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentException.ThrowIfNullOrEmpty(type);
+        EnsureNotDisposed();
+
+        var filter = new Filter
+        {
+            Kinds = new[] { Nip38Kinds.UserStatus },
+            Authors = new[] { owner.ToHex() },
+            TagFilters = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+            {
+                ["d"] = new[] { type },
+            },
+            Limit = 1,
+        };
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(5));
+
+        UserStatus? best = null;
+        try
+        {
+            await foreach (var received in SubscribeAsync(new[] { filter }, cts.Token).ConfigureAwait(false))
+            {
+                if (!UserStatus.TryFromEvent(received.Event, out var parsed) || parsed is null)
+                {
+                    continue;
+                }
+
+                if (parsed.Type != type || !parsed.Author.Equals(owner))
+                {
+                    continue;
+                }
+
+                if (best is null || parsed.CreatedAt > best.CreatedAt)
+                {
+                    best = parsed;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Timeout — return whatever we collected.
+        }
+
+        return best;
     }
 
     /// <summary>

@@ -36,6 +36,7 @@ await client.PostNoteAsync("Hello, Nostr!");
 | [22](https://github.com/nostr-protocol/nips/blob/master/22.md) | Comments (kind 1111) — threaded uppercase/lowercase root + parent tags |
 | [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form markdown articles & drafts (kinds 30023 / 30024) |
 | [25](https://github.com/nostr-protocol/nips/blob/master/25.md) | Reactions (kind 7) — likes / dislikes / Unicode emoji / custom shortcode emoji |
+| [38](https://github.com/nostr-protocol/nips/blob/master/38.md) | User statuses (kind 30315) — general activity + currently-playing music with NIP-40 expiration |
 | [42](https://github.com/nostr-protocol/nips/blob/master/42.md) | Client-relay AUTH — auto-auth + auto-retry on `auth-required` by default |
 | [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | v2 encrypted payloads (ChaCha20 + HMAC-SHA256 + HKDF) |
 | [51](https://github.com/nostr-protocol/nips/blob/master/51.md) | Lists & sets — public + NIP-44 self-encrypted private items |
