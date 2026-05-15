@@ -103,68 +103,30 @@ for the full API walkthrough. Highlights:
 | URI scheme | `BlossomUri.Parse("blossom:…")` and round-trip (BUD-10) |
 
 Tested against the official BIP-340, BIP-173, RFC 8439, and NIP-44
-interop vectors — **640+ tests, zero warnings.**
+interop vectors — **700+ tests, zero warnings.**
 
 ## Install
 
-> _Not yet on NuGet._ Requires the **.NET 10 SDK**. Two ways to consume it
-> from your own app:
-
-### Option A — Project reference (active development)
-
-Best when you want to step into NostrNet's source from your debugger and
-edit it locally.
+Available on NuGet. Requires the **.NET 10 SDK** and `<TargetFramework>net10.0</TargetFramework>`
+in your csproj.
 
 ```sh
-# 1. Clone NostrNet alongside your app
-git clone <repo> NostrNet
+# Most apps need only this — it transitively pulls Core, Crypto, Relay.
+dotnet add package NostrNet.Client --prerelease
 
-# 2. From your app's solution folder, reference NostrNet.Client
-dotnet add YourApp.csproj reference ../NostrNet/src/NostrNet.Client/NostrNet.Client.csproj
+# Add only what you need:
+dotnet add package NostrNet.Blossom            --prerelease   # content-addressed media
+dotnet add package NostrNet.Marmot             --prerelease   # MLS-over-Nostr envelopes
+dotnet add package NostrNet.Marmot.Mls.Native  --prerelease   # OpenMLS engine (multi-RID native)
 ```
 
-`NostrNet.Client` brings in `NostrNet.Core`, `NostrNet.Crypto`, and
-`NostrNet.Relay` transitively — most apps need only that one reference. Add
-the others (e.g. `NostrNet.Relay` for direct `RelayPool` / NIP-05 use)
-only if you call into them directly.
+`--prerelease` is required until a stable `v0.1.0` ships. Drop it once
+the API surface is frozen.
 
-In Visual Studio / Rider: **Add → Existing Project** for the NostrNet
-csprojs you want in Solution Explorer, then **Add → Project Reference**
-from your app to `NostrNet.Client`.
-
-### Option B — Local NuGet feed (pinned consumption)
-
-Best for CI, multiple consumers, or treating NostrNet as a versioned
-dependency.
-
-```sh
-# 1. Build all four packages into a local folder
-dotnet pack src/NostrNet.Core   -c Release -o ./local-feed
-dotnet pack src/NostrNet.Crypto -c Release -o ./local-feed
-dotnet pack src/NostrNet.Relay  -c Release -o ./local-feed
-dotnet pack src/NostrNet.Client -c Release -o ./local-feed
-```
-
-Add a `nuget.config` at the root of your app's solution (next to the `.sln`):
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources>
-    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
-    <add key="NostrNet-Local" value="/abs/path/to/NostrNet/local-feed" />
-  </packageSources>
-</configuration>
-```
-
-Then install like any NuGet package:
-
-```sh
-dotnet add YourApp.csproj package NostrNet.Client --version 1.0.0
-```
-
-Bump `<Version>` in `src/Directory.Build.props` and re-run `dotnet pack`
-when you release a new build; consumers update with `dotnet restore --force`.
+**Marmot.Mls.Native** ships native binaries for six RIDs
+(`osx-x64`, `osx-arm64`, `linux-x64`, `linux-arm64`, `win-x64`,
+`win-arm64`). NuGet picks the right one at restore. No Rust toolchain
+required to consume the package — only to build it from source.
 
 ### Target framework compatibility
 
@@ -184,8 +146,8 @@ BCL polyfills).
 ### Using with Godot
 
 NostrNet works in Godot 4.x C# projects with no special setup. On desktop
-platforms (Windows / macOS / Linux) the integration above (project
-reference or local NuGet feed) applies unchanged.
+platforms (Windows / macOS / Linux) `dotnet add package NostrNet.Client --prerelease`
+in your Godot project's csproj is all you need.
 
 Things to be aware of:
 
@@ -260,7 +222,11 @@ private void OnMined(string idHex) => _label.Text = $"mined: {idHex}";
 (Same `CallDeferred` pattern WPF/WinUI uses with `Dispatcher.Invoke`. See
 the "Threading model" section below for the general rules.)
 
-### Development setup
+### Building from source (contributors)
+
+> Not needed to consume NostrNet via NuGet — only if you're cloning the
+> repo to develop against it, run the tests, or build a custom version
+> of the Native package.
 
 NostrNet's pure-managed packages need only the .NET 10 SDK to build.
 `NostrNet.Marmot.Mls.Native` additionally needs the **Rust toolchain**
@@ -344,12 +310,13 @@ cross-platform packing for tagged releases.
 | `NostrNet.Crypto` | ChaCha20, NIP-44 v2, NIP-17 DMs, NIP-59 gift wrap, NIP-51 lists |
 | `NostrNet.Relay`  | WebSocket client, `RelayPool`, `Filter`, NIP-11 fetch, NIP-05 verify |
 | `NostrNet.Client` | High-level `NostrClient` façade |
+| `NostrNet.Blossom` | Blossom content-addressed media: HTTP client, NIP-B7 user servers, multi-server resolver, `BlossomMediaClient` façade |
 | `NostrNet.Marmot` | Marmot (MLS-over-Nostr) envelope: kind 30443 / 444 / 445, `IMarmotMlsProvider`, NIP-59 wrap of Welcomes |
-| `NostrNet.Marmot.Mls.Native` | OpenMLS-backed `IMarmotMlsProvider` via in-tree Rust FFI (`nostrnet-marmot-native/`). RFC-9420 compliant wire bytes; requires the Rust toolchain to build from source. |
+| `NostrNet.Marmot.Mls.Native` | OpenMLS-backed `IMarmotMlsProvider` via in-tree Rust FFI (`nostrnet-marmot-native/`). RFC-9420 compliant wire bytes; ships pre-built native binaries for six RIDs, requires the Rust toolchain only to build from source. |
 
 For most apps, reference only `NostrNet.Client` — it pulls in everything you
-need transitively. Marmot lives in separate packages so callers who don't
-want MLS aren't forced to take the dependency.
+need transitively. Blossom and Marmot live in separate packages so callers
+who don't want them aren't forced to take the dependency.
 
 ---
 
@@ -1453,12 +1420,39 @@ throws on its next iteration check.
 
 ## Dependencies
 
-Only one external NuGet package: **`NBitcoin.Secp256k1`** — a pure managed
-implementation of secp256k1 (BIP-340 Schnorr, ECDH). Wrapped behind an
-`internal` seam in `NostrNet.Core/Secp256k1/` so the choice of curve library
-is a single-file swap. Everything else uses the BCL: `System.Net.WebSockets`,
-`System.Net.Http`, `System.Security.Cryptography` (HKDF, HMAC-SHA256,
-SHA-256, AES, CSPRNG), `System.Text.Json`.
+### Managed (all packages)
+
+The pure-managed packages — Core, Crypto, Relay, Client, Blossom, Marmot
+— ship with **one** external NuGet dependency:
+
+- **`NBitcoin.Secp256k1`** — a pure managed implementation of secp256k1
+  (BIP-340 Schnorr, ECDH). Wrapped behind an `internal` seam in
+  `NostrNet.Core/Secp256k1/` so the choice of curve library is a
+  single-file swap.
+
+Everything else uses the BCL: `System.Net.WebSockets`, `System.Net.Http`,
+`System.Security.Cryptography` (HKDF, HMAC-SHA256, SHA-256, AES, CSPRNG),
+`System.Text.Json`.
+
+### Native (`NostrNet.Marmot.Mls.Native` only)
+
+The MLS engine for Marmot is **[OpenMLS](https://github.com/openmls/openmls)**
+0.8 — an RFC 9420-compliant MLS implementation in Rust. NostrNet bridges
+to it through an in-tree C ABI cdylib (`nostrnet-marmot-native/`) that
+also embeds:
+
+- **[`openmls_sqlite_storage`](https://github.com/openmls/openmls/tree/main/openmls_sqlite_storage)**
+  — OpenMLS's `StorageProvider` backed by SQLite, for persistent ratchet
+  state.
+- **[`rusqlite`](https://github.com/rusqlite/rusqlite)** with the
+  `bundled` feature — compiles SQLite from C source. Used both by
+  `openmls_sqlite_storage` and by a second connection that maintains
+  the Marmot-specific `nostr_group_id` ↔ MLS `GroupId` map.
+
+The published NuGet ships pre-built binaries for six RIDs (`osx-x64`,
+`osx-arm64`, `linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`); NuGet
+selects the matching one at restore. **You do not need Rust or a C
+compiler to consume this package** — only to build it from source.
 
 ## License
 
