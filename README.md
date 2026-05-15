@@ -87,7 +87,7 @@ and how to implement your own store backend.
 |----|---------|
 | [01](https://github.com/nostr-protocol/nips/blob/master/01.md) | Core protocol — events, BIP-340 Schnorr signing, relay messaging (`EVENT`, `REQ`, `EOSE`, `OK`, `NOTICE`, `CLOSED`) |
 | [02](https://github.com/nostr-protocol/nips/blob/master/02.md) | Contact / follow list (kind 3) |
-| [04](https://github.com/nostr-protocol/nips/blob/master/04.md) | Legacy DM decoding (encryption marked `[Obsolete]` — prefer NIP-17) |
+| [04](https://github.com/nostr-protocol/nips/blob/master/04.md) | Legacy DM **decode only** (`Nip04.Decrypt` / `Nip04.TryDecrypt`) — no encrypt counterpart; use NIP-17 for new DMs |
 | [05](https://github.com/nostr-protocol/nips/blob/master/05.md) | DNS-based identifier verification |
 | [09](https://github.com/nostr-protocol/nips/blob/master/09.md) | Event deletion requests (kind 5) with `e`/`a`/`k` tags and `Targets()` rule |
 | [10](https://github.com/nostr-protocol/nips/blob/master/10.md) | Thread / reply tagging (marker form + legacy positional fallback) |
@@ -704,6 +704,42 @@ Under the hood: `NostrNet.Crypto.Nip17.CreateDirectMessage` builds a rumor
 (kind 14) → seal (kind 13, signed by sender) → gift wrap (kind 1059, signed
 by an ephemeral key, addressed by `p` tag). Recipient verifies the seal's
 signature and the rumor's pubkey before yielding the plaintext.
+
+### Legacy NIP-04 DMs (decode only)
+
+For apps migrating users from clients that predate the mid-2024
+deprecation, `Nip04.TryDecrypt` reads kind-4 events. There is **no encrypt
+counterpart** — the scheme has no MAC and contributes nothing to the key
+derivation; use NIP-17 for new DMs.
+
+```csharp
+using NostrNet.Crypto;
+
+var filter = new Filter
+{
+    Kinds = new[] { Nip04.Kind },
+    TagFilters = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+    {
+        ["p"] = new[] { key.PublicKey.ToHex() },
+    },
+};
+
+await foreach (var received in client.SubscribeAsync(new[] { filter }))
+{
+    if (Nip04.TryDecrypt(received.Event, key, out string? text, out PublicKey? peer))
+        Console.WriteLine($"{peer.ToNpub()[..16]}…: {text}");
+}
+```
+
+`TryDecrypt` resolves the peer automatically — sender's pubkey when
+you're the recipient, `p`-tag value when reading your own outbound — and
+is fail-closed. Non-kind-4 events, wrong key, malformed payloads all
+return `false` without throwing, so you can iterate a mixed feed without
+catch blocks.
+
+`Nip04.Decrypt(content, myKey, peerPublicKey)` is the lower-level
+content-only variant; it throws `FormatException` / `CryptographicException`
+on bad input.
 
 ---
 

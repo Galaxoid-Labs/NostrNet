@@ -337,6 +337,37 @@ Under the hood the rumor → seal → gift wrap chain is built and the
 **seal signature is re-verified on unwrap**, so the surfaced `Sender`
 can't be spoofed by a malicious outer wrap.
 
+### Legacy NIP-04 DMs (decode only)
+
+For apps that need to read kind-4 DMs sent by clients older than
+mid-2024, `Nip04.TryDecrypt` is the primitive. There is **no encrypt
+counterpart** — the spec is deprecated; new DMs should use NIP-17.
+
+```csharp
+using NostrNet.Crypto;
+
+// Subscribe to legacy DMs addressed to me.
+var filter = new Filter
+{
+    Kinds = new[] { Nip04.Kind },
+    TagFilters = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+    {
+        ["p"] = new[] { myKey.PublicKey.ToHex() },
+    },
+};
+
+await foreach (var received in client.SubscribeAsync(new[] { filter }))
+{
+    if (Nip04.TryDecrypt(received.Event, myKey, out string? text, out PublicKey? peer))
+        Console.WriteLine($"{peer.ToNpub()[..16]}…: {text}");
+}
+```
+
+`TryDecrypt` resolves the peer automatically (sender when inbound,
+recipient from the `p` tag when reading your own outbound) and is
+fail-closed — non-kind-4 events, wrong key, malformed payloads all
+return `false` without throwing.
+
 ## Marmot — MLS group chat over Nostr
 
 Use `NostrMarmotClient` for everything end-user-facing; drop down to

@@ -109,7 +109,7 @@ without either.
 |----|------|-------|
 | 01 | events, canonical id, BIP-340, relay protocol | Core + Relay |
 | 02 | contact / follow list (kind 3) | Core/Contacts/ |
-| 04 | legacy DM **decode only** (encrypt obsoleted) | (placeholder) |
+| 04 | legacy DM **decode only** (no encrypt method by design — spec obsolete) | Crypto/Nip04.cs |
 | 05 | DNS-based identifier verification | Relay |
 | 09 | event deletion requests (kind 5) with Targets() rule | Core/Deletions/ |
 | 10 | thread/reply tagging (marker + legacy positional) | Core/Threading/ |
