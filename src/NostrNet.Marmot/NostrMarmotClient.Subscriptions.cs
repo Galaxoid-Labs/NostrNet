@@ -257,6 +257,7 @@ public sealed partial class NostrMarmotClient
         {
             MarmotMessageKind.Application => new MarmotMessageReceived(
                 Conversation: conversation,
+                EventId: ev.Id,
                 Sender: processed.Sender,
                 Plaintext: processed.Plaintext ?? string.Empty,
                 ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt)),
@@ -268,6 +269,29 @@ public sealed partial class NostrMarmotClient
 
         if (typed is not null)
         {
+            // Append to the message log BEFORE yielding so apps observing
+            // the stream + reading the log see a consistent ordering: a
+            // message can't be visible in MarmotMessageReceived yet absent
+            // from GetLastMessageAsync. The log call is fail-soft — log
+            // backends that throw don't block message delivery.
+            if (_messageLog is not null && typed is MarmotMessageReceived appMsg)
+            {
+                try
+                {
+                    await _messageLog.AppendAsync(appMsg, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // Swallow log-impl failures so a broken backend doesn't
+                    // poison the receive pump. Apps that care can wrap their
+                    // own IMarmotMessageLog with telemetry.
+                }
+            }
+
             await _inboundChannel!.Writer.WriteAsync(typed, ct).ConfigureAwait(false);
         }
 

@@ -137,7 +137,7 @@ pub unsafe extern "C" fn marmot_buffer_free(ptr: *mut u8, len: usize) {
 /// mismatched binaries.
 #[unsafe(no_mangle)]
 pub extern "C" fn marmot_abi_version() -> u32 {
-    4
+    5
 }
 
 // ──────────────────────────────────────────────────────────────────────

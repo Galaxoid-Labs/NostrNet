@@ -33,7 +33,9 @@ src/
                                 don't pull Blossom-specific code transitively.
   NostrNet.Marmot/              Marmot wire envelopes (kinds 30443/444/445),
                                 IMarmotMlsProvider interface, MarmotChat 1:1 + group
-                                helpers, NIP-59 wrap/unwrap of Welcomes. No MLS engine.
+                                helpers, NIP-59 wrap/unwrap of Welcomes,
+                                IMarmotMessageLog + MemoryMarmotMessageLog for
+                                plaintext-history capture at decrypt time. No MLS engine.
   NostrNet.Marmot.Mls.Native/   IMarmotMlsProvider implementation backed by OpenMLS
                                 via the in-tree Rust FFI bridge. Sole MLS provider.
 nostrnet-marmot-native/         Rust crate (cdylib + rlib). Wraps openmls 0.8 with
@@ -116,6 +118,25 @@ without either.
    the same conflict should follow that pattern. Conversion failures
    (`TryFromEvent` returns false) are silently skipped — apps shouldn't
    see malformed events bubble up through the typed surface.
+10. **Marmot plaintext history is an opt-in app-supplied log, not
+    provider state.** MLS forward secrecy destroys old exporters as the
+    epoch advances, so kind-445 ciphertext on relays can't be
+    re-decrypted on a future session — anything renderable on cold
+    start has to be captured at decrypt time. `IMarmotMessageLog`
+    (NostrNet.Marmot/) is the optional hook; the receive pump in
+    `NostrMarmotClient.Subscriptions.cs` appends every successfully-
+    decrypted application message to the configured log before yielding
+    it. `MemoryMarmotMessageLog` is the in-tree reference impl; apps
+    plug in persistent backends (SQLite, Realm, encrypted-at-rest)
+    via `NostrMarmotClientBuilder.WithMessageLog(log)`. Dedup is on
+    `MarmotMessageReceived.EventId` (the outer kind-445 event id).
+    **Don't put plaintext history in the MLS provider** — that pollutes
+    the layering and would couple the FFI to an app-specific storage
+    decision. The provider's SQLite is sacred MLS state only.
+    Multi-device "I joined this group from another device" is NOT
+    solved by the log (it's an MLS-layer problem; see the Marmot section
+    in the README for why a NIP-17-style self-wrap of Welcomes would
+    break MLS forward secrecy).
 
 ## NIPs implemented
 

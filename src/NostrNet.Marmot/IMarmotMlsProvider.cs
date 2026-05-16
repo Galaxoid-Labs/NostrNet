@@ -190,9 +190,16 @@ public interface IMarmotMlsProvider
 /// <summary>A single group present in MLS storage.</summary>
 /// <param name="NostrGroupId">32-byte Nostr group id (the h-tag value).</param>
 /// <param name="Members">Identity pubkeys of every active member of the group, including ourselves.</param>
+/// <param name="GroupData">
+/// Parsed NostrGroupData extension (MIP-01) — display name, description,
+/// admins, relays, image fields. <c>null</c> only if the underlying MLS
+/// group has no 0xF2EE extension (shouldn't occur for spec-conforming
+/// Marmot groups; kept nullable defensively).
+/// </param>
 public sealed record MarmotStoredGroup(
     byte[] NostrGroupId,
-    IReadOnlyList<PublicKey> Members);
+    IReadOnlyList<PublicKey> Members,
+    NostrNet.Marmot.GroupData.MarmotGroupDataExtension? GroupData);
 
 /// <summary>Diagnostics snapshot of an MLS state DB.</summary>
 /// <param name="Path">The filesystem path the provider was opened from, or <c>null</c> for in-memory providers.</param>

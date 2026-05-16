@@ -173,10 +173,12 @@ using var provider2 = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite");
 ### Resuming conversations on startup
 
 `ListGroupsAsync` enumerates every group the provider has in storage
-(MLS group state + members). `NostrMarmotClient` builds on this with
+(MLS group state + members + the parsed NostrGroupData extension).
+`NostrMarmotClient` builds on this with
 `LoadExistingConversationsAsync`, which converts each into a
-`MarmotConversation`, derives the 1:1 peer when unambiguous, and
-starts kind-445 subscriptions automatically:
+`MarmotConversation`, derives the 1:1 peer when unambiguous, **and
+automatically registers each conversation with the inbox/per-conversation
+pumps** — callers do NOT call `TrackConversation` themselves.
 
 ```csharp
 await using var client = await NostrMarmotClient.Builder(myKey, provider)
@@ -186,17 +188,66 @@ await using var client = await NostrMarmotClient.Builder(myKey, provider)
 // Restore prior conversations before subscribing for new traffic.
 foreach (var c in await client.LoadExistingConversationsAsync())
 {
-    Console.WriteLine($"resumed group {Convert.ToHexStringLower(c.NostrGroupId)} (peer: {c.Peer?.ToNpub()})");
+    string label = c.IsGroup ? (c.Name ?? "(unnamed group)") : c.Peer!.ToNpub();
+    Console.WriteLine($"resumed {Convert.ToHexStringLower(c.NostrGroupId)} — {label}");
 }
 
-// Then start the inbound pump as normal.
+// Then start the inbound pump as normal — kind-445 traffic for every
+// returned conversation flows here automatically.
 await foreach (var ev in client.SubscribeAsync(ct)) { /* ... */ }
 ```
 
-`MarmotConversation.Peer` is nullable: for multi-member groups or
-conversations rehydrated from storage where the 1:1 peer is
-ambiguous, it's `null`. Use the `MarmotStoredGroup.Members` list
-returned by `ListGroupsAsync` if you need the full membership.
+`MarmotConversation` carries:
+
+- `NostrGroupId` — 32-byte group id used as the `h` tag on kind-445 events.
+- `Peer` — nullable. For 1:1 conversations, the other party's pubkey.
+  For multi-member groups and rehydrated conversations where the 1:1 peer
+  is ambiguous, `null`. `IsGroup` is the equivalent convenience.
+- `Name` / `Description` — lifted from the MIP-01 NostrGroupData
+  extension. Populated whenever the extension is present on the
+  underlying MLS group. Empty string is permitted by the spec for
+  "unnamed groups" — render empty the same as null.
+
+### Cold-start chat history (`IMarmotMessageLog`)
+
+MLS forward secrecy destroys old exporters as the epoch advances, so
+kind-445 ciphertext on relays cannot be re-decrypted on a future
+session. Anything you want to render on cold start — chat history,
+chat-list previews, last-activity timestamps — must be captured at the
+moment of decryption. The `IMarmotMessageLog` hook does this:
+
+```csharp
+await using var client = await NostrMarmotClient.Builder(myKey, provider)
+    .UseRelays("wss://relay.example")
+    .WithMessageLog(new MemoryMarmotMessageLog())   // or your SQLite-backed impl
+    .ConnectAsync();
+```
+
+When a log is attached, every successfully-decrypted application
+message is appended automatically before being yielded from
+`SubscribeAsync`. On startup, replay per-conversation history:
+
+```csharp
+foreach (var c in await client.LoadExistingConversationsAsync())
+{
+    await foreach (var msg in client.LoadHistoryAsync(c))
+        Render(c, msg);
+
+    // For chat-list "last message + last activity" rendering:
+    var preview = await client.GetLastMessageAsync(c);
+}
+```
+
+`MemoryMarmotMessageLog` is fine for tests; for production, implement
+`IMarmotMessageLog` (four methods: `AppendAsync`, `LoadAsync`,
+`GetLastAsync`, `DeleteGroupAsync`) over your persistent store.
+Implementations dedup on `MarmotMessageReceived.EventId` so the same
+kind-445 from multiple relays only stores once. Call `DeleteGroupAsync`
+after a clean leave or "delete chat" UI action so the log doesn't
+outlive the MLS state.
+
+Without a log, `LoadHistoryAsync` returns an empty stream and
+`GetLastMessageAsync` returns null — both are still safe to call.
 
 ### Connection resilience (inherited from `NostrClient`)
 

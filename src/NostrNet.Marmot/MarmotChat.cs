@@ -40,7 +40,29 @@ namespace NostrNet.Marmot;
 /// <summary>A live Marmot conversation handle.</summary>
 /// <param name="NostrGroupId">The 32-byte group id used in <c>h</c> tags on kind-445 events.</param>
 /// <param name="Peer">For 1:1 conversations the other party's pubkey. <c>null</c> for multi-member groups, or for conversations rehydrated from storage where the peer isn't unambiguous.</param>
-public sealed record MarmotConversation(byte[] NostrGroupId, PublicKey? Peer);
+public sealed record MarmotConversation(byte[] NostrGroupId, PublicKey? Peer)
+{
+    /// <summary>
+    /// Display name from the NostrGroupData extension (MIP-01). <c>null</c>
+    /// when the underlying group has no extension or when the conversation
+    /// was constructed without one. Empty string is permitted by the spec
+    /// for "unnamed groups" — render empty the same as null.
+    /// </summary>
+    public string? Name { get; init; }
+
+    /// <summary>
+    /// Description from the NostrGroupData extension. <c>null</c> when not
+    /// available.
+    /// </summary>
+    public string? Description { get; init; }
+
+    /// <summary>
+    /// <c>true</c> when this is a multi-member group (or a 1:1 where the
+    /// peer couldn't be derived). Equivalent to <c>Peer is null</c> but
+    /// reads more cleanly in call sites.
+    /// </summary>
+    public bool IsGroup => Peer is null;
+}
 
 /// <summary>The output of <see cref="MarmotChat.StartConversationAsync"/>.</summary>
 /// <param name="Conversation">Handle to the freshly created conversation.</param>
@@ -299,7 +321,11 @@ public static class MarmotChat
             recommendedRelays: relays);
 
         return new MarmotConversationStarted(
-            Conversation: new MarmotConversation(groupId, peerKp.Author),
+            Conversation: new MarmotConversation(groupId, peerKp.Author)
+            {
+                Name = groupData.Name,
+                Description = groupData.Description,
+            },
             WelcomeGiftWrap: giftWrap);
     }
 
@@ -332,7 +358,11 @@ public static class MarmotChat
 
             return new MarmotConversation(
                 NostrGroupId: joined.NostrGroupId,
-                Peer: welcome.Sender);
+                Peer: welcome.Sender)
+            {
+                Name = joined.GroupData.Name,
+                Description = joined.GroupData.Description,
+            };
         }
         catch (System.Security.Cryptography.CryptographicException)
         {
@@ -400,7 +430,11 @@ public static class MarmotChat
             {
                 if (m.Equals(welcome.Sender))
                 {
-                    return new MarmotConversation(g.NostrGroupId, welcome.Sender);
+                    return new MarmotConversation(g.NostrGroupId, welcome.Sender)
+                    {
+                        Name = g.GroupData?.Name,
+                        Description = g.GroupData?.Description,
+                    };
                 }
             }
         }
@@ -737,11 +771,18 @@ public static class MarmotChat
                 recommendedRelays: relays);
         }
 
-        // Use the first peer as the conversation's "Peer" for the
-        // MarmotConversation handle. The handle is only used for
-        // exporter/group-id lookup; per-peer info lives elsewhere.
+        // Peer is null for multi-member groups so it agrees with what
+        // LoadExistingConversationsAsync sees on the next session.
+        // For a 1:1-shaped use of StartGroupAsync (single peer in the
+        // list, which is functionally identical to StartConversationAsync)
+        // we keep the peer set so app code can render the 1:1 peer chip.
+        PublicKey? handlePeer = peerKps.Length == 1 ? peerKps[0].Author : null;
         return new MarmotGroupStarted(
-            Conversation: new MarmotConversation(groupId, peerKps[0].Author),
+            Conversation: new MarmotConversation(groupId, handlePeer)
+            {
+                Name = groupData.Name,
+                Description = groupData.Description,
+            },
             WelcomeGiftWraps: giftWraps);
     }
 

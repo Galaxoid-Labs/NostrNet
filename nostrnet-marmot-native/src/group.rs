@@ -139,14 +139,30 @@ pub unsafe fn vacuum(provider: *mut Provider) -> i32 {
 }
 
 /// Enumerate every group present in storage. For each group, emit
-/// its 32-byte Nostr group id and the per-member identity blob
-/// (currently 32 bytes per member; BasicCredential identities are
-/// the Nostr pubkey hex bytes).
+/// its 32-byte Nostr group id, the per-member identity blob (currently
+/// 32 bytes per member; BasicCredential identities are the Nostr
+/// pubkey hex bytes), and the raw bytes of the NostrGroupData
+/// extension (0xF2EE) so callers can read group name / description /
+/// admins / relays / image metadata without an extra round trip.
+///
+/// Output layout:
+///   [u32 BE count]
+///   { [32 bytes gid]
+///     [u32 BE member_count] [member_count * 32 bytes pubkey]
+///     [u32 BE ext_len]      [ext_len bytes nostr_group_data_extension]
+///   }*
+///
+/// `ext_len` is 0 when the group's NostrGroupData extension is missing
+/// (shouldn't happen for Marmot groups, but kept defensive). When
+/// non-zero, the bytes are the same wire format `MarmotGroupDataExtension::parse`
+/// in the managed side already consumes — no re-encoding here.
 pub unsafe fn list_groups(
     provider: *mut Provider,
     out_blob_ptr: *mut *mut u8,
     out_blob_len: *mut usize,
 ) -> i32 {
+    use openmls::extensions::{Extension, ExtensionType};
+
     if provider.is_null() {
         return fail(ErrorCode::NullArgument, "provider handle is null");
     }
@@ -159,6 +175,7 @@ pub unsafe fn list_groups(
 
     let mut blob: Vec<u8> = Vec::new();
     let mut count: u32 = 0;
+    let ext_type = ExtensionType::Unknown(crate::keypackage::NOSTR_GROUP_DATA_EXTENSION_TYPE);
     for nostr_id in &nostr_ids {
         // Look up the underlying MLS group via the mapping.
         let group = match load_group(provider, nostr_id) {
@@ -180,6 +197,20 @@ pub unsafe fn list_groups(
         }
         blob.extend_from_slice(&member_count.to_be_bytes());
         blob.extend_from_slice(&member_blob);
+
+        // Extract the NostrGroupData extension wire bytes (if present).
+        let ext_bytes: &[u8] = group
+            .extensions()
+            .iter()
+            .find(|e| e.extension_type() == ext_type)
+            .and_then(|e| match e {
+                Extension::Unknown(_, body) => Some(body.0.as_slice()),
+                _ => None,
+            })
+            .unwrap_or(&[]);
+        blob.extend_from_slice(&(ext_bytes.len() as u32).to_be_bytes());
+        blob.extend_from_slice(ext_bytes);
+
         count += 1;
     }
 

@@ -34,11 +34,24 @@ public sealed record MarmotInviteReceived(
 /// MLS application message.
 /// </summary>
 /// <param name="Conversation">The conversation this message belongs to.</param>
-/// <param name="Sender">The Nostr pubkey of the member that sent it, resolved via the MLS layer (NOT the ephemeral outer signature). Null when the MLS layer can't resolve.</param>
+/// <param name="EventId">
+/// The outer kind-445 event id. Use this as the dedup key when the same
+/// message arrives from multiple relays or when persisting to an
+/// <see cref="IMarmotMessageLog"/>.
+/// </param>
+/// <param name="Sender">
+/// <strong>May be null</strong> when the MLS layer can't resolve the leaf
+/// to a Nostr pubkey. When non-null, this is the cryptographically
+/// verified sender resolved via the MLS layer (NOT the ephemeral outer
+/// signature on the kind-445 event), so it cannot be spoofed by a
+/// malicious outer wrap. Apps should null-check before using; treating
+/// null as "unknown sender" is the safe rendering.
+/// </param>
 /// <param name="Plaintext">The decrypted UTF-8 plaintext.</param>
 /// <param name="ServerTimestamp">The kind-445 event's <c>created_at</c>.</param>
 public sealed record MarmotMessageReceived(
     MarmotConversation Conversation,
+    EventId EventId,
     PublicKey? Sender,
     string Plaintext,
     DateTimeOffset ServerTimestamp) : MarmotInboundEvent;

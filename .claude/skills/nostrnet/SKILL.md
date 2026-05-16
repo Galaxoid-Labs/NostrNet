@@ -623,11 +623,14 @@ subsequent sends use the new exporter.
 ### Resume on startup
 
 ```csharp
-// Restore prior conversations before subscribing for new traffic.
+// LoadExistingConversationsAsync auto-tracks each returned conversation
+// with the inbox/per-conversation pumps — do NOT call TrackConversation
+// yourself. The subsequent SubscribeAsync yields MarmotMessageReceived
+// for every conversation without further setup.
 foreach (var c in await marmot.LoadExistingConversationsAsync())
 {
-    var peer = c.Peer?.ToNpub() ?? "(group)";
-    Console.WriteLine($"resumed {Convert.ToHexStringLower(c.NostrGroupId)} — {peer}");
+    var label = c.IsGroup ? (c.Name ?? "(group)") : c.Peer!.ToNpub();
+    Console.WriteLine($"resumed {Convert.ToHexStringLower(c.NostrGroupId)} — {label}");
 }
 
 // Then run the inbound pump as normal:
@@ -637,9 +640,49 @@ _ = Task.Run(async () =>
 });
 ```
 
-`MarmotConversation.Peer` is **nullable** — groups and rehydrated
-conversations where the 1:1 peer is ambiguous leave it null. Don't
-assume it's set.
+`MarmotConversation` carries `NostrGroupId`, `Peer` (nullable for groups),
+plus `Name` / `Description` / `IsGroup` lifted from the MIP-01
+NostrGroupData extension. `Peer == null` is equivalent to `IsGroup`;
+use whichever reads better in the call site.
+
+### Cold-start history (`IMarmotMessageLog`)
+
+**MLS forward secrecy destroys old exporters as the epoch advances**,
+so the kind-445 ciphertext on relays cannot be re-decrypted on a future
+session. To render history on cold start (or chat-list previews), the
+app must capture plaintext at the moment of decryption. The library
+gives you a hook:
+
+```csharp
+await using var marmot = await NostrMarmotClient.Builder(myKey, provider)
+    .UseRelays("wss://relay.example")
+    .WithMessageLog(new MemoryMarmotMessageLog())    // or your SQLite/Realm impl
+    .ConnectAsync();
+```
+
+When a log is attached, every successfully-decrypted application
+message is appended automatically before being yielded from
+`SubscribeAsync`. On startup, replay per-conversation history before
+live traffic flows:
+
+```csharp
+foreach (var c in await marmot.LoadExistingConversationsAsync())
+{
+    await foreach (var msg in marmot.LoadHistoryAsync(c))
+        Render(c, msg);
+
+    var preview = await marmot.GetLastMessageAsync(c);   // for chat list
+}
+```
+
+The default `MemoryMarmotMessageLog` is fine for tests; for production,
+implement `IMarmotMessageLog` against your own persistent storage
+(SQLite, Realm, encrypted-at-rest, whatever your app uses). The
+interface has four methods — `AppendAsync`, `LoadAsync`, `GetLastAsync`,
+`DeleteGroupAsync` — and implementations dedup on
+`MarmotMessageReceived.EventId` so the same kind-445 from multiple
+relays only stores once. Call `DeleteGroupAsync` after a clean leave or
+"delete chat" UI action so the log doesn't outlive the MLS state.
 
 ### Constraint worth knowing
 

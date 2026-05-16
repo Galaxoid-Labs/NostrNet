@@ -36,13 +36,16 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
     private readonly bool _rotateAfterAccept;
     private bool _disposed;
 
+    private readonly IMarmotMessageLog? _messageLog;
+
     internal NostrMarmotClient(
         IMarmotRelay relay,
         IMarmotMlsProvider provider,
         PrivateKey identityKey,
         IReadOnlyList<string> advertisedRelays,
         NostrClient? ownedClient,
-        bool rotateAfterAccept)
+        bool rotateAfterAccept,
+        IMarmotMessageLog? messageLog)
     {
         _relay = relay ?? throw new ArgumentNullException(nameof(relay));
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
@@ -50,7 +53,16 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
         _advertisedRelays = advertisedRelays ?? Array.Empty<string>();
         _ownedClient = ownedClient;
         _rotateAfterAccept = rotateAfterAccept;
+        _messageLog = messageLog;
     }
+
+    /// <summary>
+    /// The configured <see cref="IMarmotMessageLog"/>, or <c>null</c> when
+    /// none was supplied. When non-null, every successfully-decrypted
+    /// application message (kind-445 Application) is appended automatically
+    /// before being yielded from <see cref="SubscribeAsync"/>.
+    /// </summary>
+    public IMarmotMessageLog? MessageLog => _messageLog;
 
     /// <summary>
     /// The most recent failure (if any) from the auto-publish step
@@ -292,11 +304,26 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
 
     /// <summary>
     /// Enumerate every Marmot conversation already in the underlying
-    /// MLS store and start subscribing to each one's kind-445 traffic.
-    /// Intended for app startup — calling it lets the app restore the
-    /// conversations from a previous session without each having to be
-    /// re-accepted from a Welcome.
+    /// MLS store, register each one with the live subscription pump, and
+    /// return the resulting handles. Intended for app startup — calling
+    /// this lets the app restore conversations from a previous session
+    /// without each having to be re-accepted from a Welcome.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Each returned conversation is <em>already tracked</em> by the
+    /// inbox/per-conversation pumps — callers do not (and should not)
+    /// call <see cref="TrackConversation"/> on them. A subsequent
+    /// <see cref="SubscribeAsync"/> will yield
+    /// <see cref="MarmotMessageReceived"/> for kind-445 traffic on every
+    /// returned conversation automatically.
+    /// </para>
+    /// <para>
+    /// <see cref="MarmotConversation.Name"/> and
+    /// <see cref="MarmotConversation.Description"/> are populated from
+    /// the underlying group's NostrGroupData extension when available.
+    /// </para>
+    /// </remarks>
     /// <returns>The list of conversations now being tracked.</returns>
     public async Task<IReadOnlyList<MarmotConversation>> LoadExistingConversationsAsync(CancellationToken ct = default)
     {
@@ -329,12 +356,67 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
                 }
             }
 
-            var convo = new MarmotConversation(g.NostrGroupId, peer);
+            var convo = new MarmotConversation(g.NostrGroupId, peer)
+            {
+                Name = g.GroupData?.Name,
+                Description = g.GroupData?.Description,
+            };
             TrackConversation(convo);
             conversations.Add(convo);
         }
 
         return conversations;
+    }
+
+    /// <summary>
+    /// Replay persisted application-message history for
+    /// <paramref name="conversation"/> from the attached
+    /// <see cref="IMarmotMessageLog"/>. Returns an empty stream when no
+    /// log was configured. Intended for cold-start rendering — call
+    /// this for each conversation immediately after
+    /// <see cref="LoadExistingConversationsAsync"/> to populate the UI
+    /// before live kind-445 events start flowing.
+    /// </summary>
+    /// <param name="conversation">The conversation to load history for.</param>
+    /// <param name="since">Inclusive lower bound on <see cref="MarmotMessageReceived.ServerTimestamp"/>. <c>null</c> = beginning of stored history.</param>
+    /// <param name="limit">Optional cap on the number of messages yielded.</param>
+    /// <param name="cancellationToken">Cancels enumeration.</param>
+    public IAsyncEnumerable<MarmotMessageReceived> LoadHistoryAsync(
+        MarmotConversation conversation,
+        DateTimeOffset? since = null,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
+        EnsureNotDisposed();
+        return _messageLog is null
+            ? EmptyHistory(cancellationToken)
+            : _messageLog.LoadAsync(conversation.NostrGroupId, since, limit, cancellationToken);
+    }
+
+    /// <summary>
+    /// The most recent persisted application message for
+    /// <paramref name="conversation"/>, or <c>null</c> when none is stored.
+    /// Use for chat-list previews and last-activity timestamps.
+    /// Returns <c>null</c> when no <see cref="IMarmotMessageLog"/> is configured.
+    /// </summary>
+    public ValueTask<MarmotMessageReceived?> GetLastMessageAsync(
+        MarmotConversation conversation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
+        EnsureNotDisposed();
+        return _messageLog is null
+            ? new ValueTask<MarmotMessageReceived?>((MarmotMessageReceived?)null)
+            : _messageLog.GetLastAsync(conversation.NostrGroupId, cancellationToken);
+    }
+
+    private static async IAsyncEnumerable<MarmotMessageReceived> EmptyHistory(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.CompletedTask.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        yield break;
     }
 
     /// <summary>
@@ -458,6 +540,7 @@ public sealed class NostrMarmotClientBuilder
     private readonly IMarmotMlsProvider _provider;
     private readonly List<string> _relays = new();
     private IMarmotRelay? _relayBridge;
+    private IMarmotMessageLog? _messageLog;
     private bool _autoAuth = true;
     private bool _autoReconnect = true;
     private bool _autoResubscribe = true;
@@ -561,6 +644,21 @@ public sealed class NostrMarmotClientBuilder
     }
 
     /// <summary>
+    /// Attaches an <see cref="IMarmotMessageLog"/> for plaintext-message
+    /// persistence. Every successfully-decrypted kind-445 application
+    /// message will be appended automatically. Without a log, cold-start
+    /// chat history is unavailable — MLS forward secrecy destroys old
+    /// exporters as the epoch advances, so kind-445 ciphertext on relays
+    /// can't be re-decrypted on a future session.
+    /// </summary>
+    public NostrMarmotClientBuilder WithMessageLog(IMarmotMessageLog log)
+    {
+        ArgumentNullException.ThrowIfNull(log);
+        _messageLog = log;
+        return this;
+    }
+
+    /// <summary>
     /// Builds the <see cref="NostrMarmotClient"/>. When
     /// <see cref="UseRelayBridge"/> hasn't been called, connects a
     /// fresh <see cref="NostrClient"/> to the configured relays and
@@ -571,7 +669,7 @@ public sealed class NostrMarmotClientBuilder
         NostrMarmotClient marmot;
         if (_relayBridge is not null)
         {
-            marmot = new NostrMarmotClient(_relayBridge, _provider, _identityKey, _relays, ownedClient: null, _rotateAfterAccept);
+            marmot = new NostrMarmotClient(_relayBridge, _provider, _identityKey, _relays, ownedClient: null, _rotateAfterAccept, _messageLog);
         }
         else
         {
@@ -589,7 +687,7 @@ public sealed class NostrMarmotClientBuilder
 
             var client = await clientBuilder.ConnectAsync(ct).ConfigureAwait(false);
             var bridge = new NostrClientMarmotRelay(client);
-            marmot = new NostrMarmotClient(bridge, _provider, _identityKey, _relays, ownedClient: client, _rotateAfterAccept);
+            marmot = new NostrMarmotClient(bridge, _provider, _identityKey, _relays, ownedClient: client, _rotateAfterAccept, _messageLog);
         }
 
         if (_autoPublishKeyPackage)

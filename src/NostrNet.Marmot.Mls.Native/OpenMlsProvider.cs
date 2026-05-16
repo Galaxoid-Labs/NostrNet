@@ -589,7 +589,12 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
 
     private static IReadOnlyList<MarmotStoredGroup> ParseStoredGroupsBlob(byte[] blob)
     {
-        // Layout: [u32 BE count] { [32 bytes gid] [u32 BE member_count] [member_count*32 bytes pubkey] }*
+        // Layout (FFI ABI v5):
+        //   [u32 BE count]
+        //   { [32 bytes gid]
+        //     [u32 BE member_count] [member_count*32 bytes pubkey]
+        //     [u32 BE ext_len]      [ext_len bytes NostrGroupData extension]
+        //   }*
         if (blob.Length < 4)
         {
             return Array.Empty<MarmotStoredGroup>();
@@ -621,7 +626,36 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
                 cursor += 32;
             }
 
-            groups.Add(new MarmotStoredGroup(gid, members));
+            // ext_len + ext bytes.
+            if (cursor + 4 > blob.Length)
+            {
+                break;
+            }
+
+            uint extLen = ReadUInt32BigEndian(blob, ref cursor);
+            if (cursor + (int)extLen > blob.Length)
+            {
+                break;
+            }
+
+            NostrNet.Marmot.GroupData.MarmotGroupDataExtension? groupData = null;
+            if (extLen > 0)
+            {
+                // Parse the NostrGroupData (0xF2EE) wire bytes. The C# parser
+                // tolerates the small wire-format drift we've seen across mdk
+                // versions (older fields fall back to defaults), so we surface
+                // null rather than throwing if a future format ever sneaks past
+                // — apps see "no group data" instead of a load-time crash.
+                if (NostrNet.Marmot.GroupData.MarmotGroupDataExtension.TryParse(
+                        blob.AsSpan(cursor, (int)extLen), out var parsed))
+                {
+                    groupData = parsed;
+                }
+
+                cursor += (int)extLen;
+            }
+
+            groups.Add(new MarmotStoredGroup(gid, members, groupData));
         }
 
         return groups;
