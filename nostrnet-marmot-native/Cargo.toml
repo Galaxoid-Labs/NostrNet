@@ -18,10 +18,16 @@ openmls_rust_crypto = "0.5"
 openmls_traits = "0.5"
 openmls_basic_credential = "0.5"
 openmls_memory_storage = "0.5"
-# SQLite-backed storage. The "bundled" feature on rusqlite compiles
-# SQLite from source so consumers don't need a system SQLite library.
+# SQLite-backed storage. We use SQLCipher (a SQLite fork with built-in
+# AES-256-CBC + HMAC page encryption) so the MLS state file — exporter
+# secrets, signature keys, ratchet state — is encrypted at rest. The
+# `bundled-sqlcipher-vendored-openssl` feature on rusqlite compiles both
+# SQLCipher and OpenSSL from source so consumers don't need either as a
+# system dependency. Cargo unifies the rusqlite features used here with
+# openmls_sqlite_storage's "bundled" so its Connection ends up running
+# the SQLCipher amalgamation too — no fork required.
 openmls_sqlite_storage = "0.2"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = "1"
 serde_json = "1"
 tls_codec = "0.4"

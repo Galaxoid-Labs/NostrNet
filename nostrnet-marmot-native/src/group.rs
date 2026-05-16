@@ -131,6 +131,15 @@ pub unsafe fn vacuum(provider: *mut Provider) -> i32 {
         Err(e) => return fail(ErrorCode::StorageFailure, format!("open for vacuum: {e}")),
     };
 
+    // SQLCipher: apply the cached key before any read. The file-backed
+    // open path always populates Provider.mls_key, so this is always
+    // Some for the file path we landed in above.
+    if let Some(key) = provider.mls_key.as_deref() {
+        if let Err(e) = crate::provider::apply_key_for_fresh_connection(&conn, key) {
+            return fail(ErrorCode::StorageFailure, format!("PRAGMA key for vacuum: {e}"));
+        }
+    }
+
     if let Err(e) = conn.execute("VACUUM", []) {
         return fail(ErrorCode::StorageFailure, format!("VACUUM: {e}"));
     }

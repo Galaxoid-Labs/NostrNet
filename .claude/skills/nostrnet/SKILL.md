@@ -495,8 +495,37 @@ using NostrNet.Marmot.Mls.Native;     // OpenMLS-backed provider
 // In-memory — state evaporates on dispose. Good for tests.
 using IMarmotMlsProvider provider = new OpenMlsProvider();
 
-// Persistent — state survives restarts. Path is a SQLite db file.
-using var provider = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite");
+// Persistent — state survives restarts. The file is SQLCipher-encrypted
+// at rest with a 32-byte raw key the caller supplies. The MLS state DB
+// holds exporter secrets + signature keys; encrypting it closes the
+// "OneDrive Backup / stolen laptop / forensic file extraction" leak
+// vectors that BitLocker-less machines and same-folder backups
+// otherwise expose. Apps derive the 32-byte key via HKDF-SHA256 over
+// the user's nsec (or a passphrase) — library doesn't run a KDF on it.
+Span<byte> nsecBytes = stackalloc byte[32];
+Span<byte> mlsKey = stackalloc byte[32];
+try
+{
+    myKey.CopyTo(nsecBytes);
+    System.Security.Cryptography.HKDF.DeriveKey(
+        System.Security.Cryptography.HashAlgorithmName.SHA256,
+        ikm: nsecBytes,
+        output: mlsKey,
+        salt: "myapp:marmot-mls/v1"u8,
+        info: "mls-state-encryption"u8);
+
+    using var provider = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite", mlsKey);
+    // ... use provider as normal ...
+}
+finally
+{
+    System.Security.Cryptography.CryptographicOperations.ZeroMemory(nsecBytes);
+    System.Security.Cryptography.CryptographicOperations.ZeroMemory(mlsKey);
+}
+
+// Wrong key on reopen → InvalidMlsKeyException (typed; distinct from
+// generic InvalidOperationException storage failure). Wrong length →
+// ArgumentException.
 
 using var myKey = PrivateKey.Generate();
 
@@ -861,11 +890,14 @@ alphabet) rather than running forever.
 - **`MarmotConversation.Peer` is nullable.** Multi-member groups and
   rehydrated conversations leave it null; don't deref it
   unconditionally.
-- **State-DB lifecycle.** `OpenMlsProvider.OpenAtPath(path)` opens a
-  SQLite db. `WipeStateAsync()` deletes `.db` + `-shm` + `-wal`
-  sidecars — that's the "sign out / reset chat" primitive. There's
-  also `StateInfoAsync()` for diagnostics (size + group count) and
-  `VacuumAsync()` for compaction.
+- **State-DB lifecycle.** `OpenMlsProvider.OpenAtPath(path, rawKey)`
+  opens a **SQLCipher-encrypted** SQLite db; the 32-byte raw key is
+  supplied by the caller (derive via HKDF over an nsec or passphrase).
+  `WipeStateAsync()` disposes the provider and deletes `.db` + `-shm`
+  + `-wal` sidecars — that's the "sign out / reset chat" primitive.
+  There's also `StateInfoAsync()` for diagnostics (size + group count)
+  and `VacuumAsync()` for compaction. Encryption is mandatory for
+  file-backed providers — there's no unencrypted file path.
 - **Blossom mirror failures don't throw.** Only the primary upload
   failing throws. Inspect `upload.Mirrors[server]` for per-server
   results so you can render partial-success UX.

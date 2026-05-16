@@ -34,14 +34,31 @@ internal sealed class ProviderHandle : SafeHandle
         return h;
     }
 
-    public static ProviderHandle OpenAtPath(string path)
+    public static ProviderHandle OpenAtPath(string path, ReadOnlySpan<byte> rawKey)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
+        if (rawKey.Length != 32)
+        {
+            throw new ArgumentException(
+                $"MLS state key must be exactly 32 bytes; got {rawKey.Length}.", nameof(rawKey));
+        }
+
         var h = new ProviderHandle();
-        IntPtr raw = NativeBindings.ProviderOpenAtPath(path);
+        IntPtr raw;
+        unsafe
+        {
+            fixed (byte* keyPtr = rawKey)
+            {
+                raw = NativeBindings.ProviderOpenAtPath(path, keyPtr, (nuint)rawKey.Length);
+            }
+        }
+
         if (raw == IntPtr.Zero)
         {
-            Errors.Throw(-8, $"OpenAtPath({path})");
+            // Surface the precise FFI error code so wrong-key vs. generic
+            // storage failure produce distinct exception types.
+            int code = NativeBindings.LastErrorCode();
+            Errors.Throw(code, $"OpenAtPath({path})");
         }
 
         h.SetHandle(raw);

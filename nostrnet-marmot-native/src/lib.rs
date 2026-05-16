@@ -53,21 +53,39 @@ pub extern "C" fn marmot_provider_new() -> *mut Provider {
     Box::into_raw(provider)
 }
 
-/// Creates a new provider instance backed by a SQLite file at
-/// `path` (UTF-8 NUL-terminated). State persists across process
-/// restarts: re-opening the same file restores all groups,
-/// signature keys, and HPKE init keys.
+/// Creates a new provider instance backed by a SQLCipher-encrypted
+/// SQLite file at `path` (UTF-8 NUL-terminated). The file is encrypted
+/// with the supplied 32-byte raw key (AES-256). State persists across
+/// process restarts: re-opening the same file with the same key
+/// restores all groups, signature keys, and HPKE init keys.
 ///
-/// Returns null on failure (open error, schema migration failure,
-/// invalid UTF-8); see marmot_last_error_message().
+/// Returns null on failure. On a wrong-key open, last-error code is
+/// `InvalidMlsKey` so callers can distinguish "user typed wrong
+/// passphrase" from a generic storage failure and prompt accordingly.
 ///
 /// # Safety
 /// `path_ptr` must point at a NUL-terminated UTF-8 string.
+/// `key_ptr` must point at exactly `key_len` (= 32) bytes of readable memory.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn marmot_provider_open_at_path(path_ptr: *const c_char) -> *mut Provider {
+pub unsafe extern "C" fn marmot_provider_open_at_path(
+    path_ptr: *const c_char,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> *mut Provider {
     errors::clear_last_error();
     if path_ptr.is_null() {
         errors::set_last_error(errors::ErrorCode::NullArgument, "path pointer is null");
+        return std::ptr::null_mut();
+    }
+    if key_ptr.is_null() {
+        errors::set_last_error(errors::ErrorCode::NullArgument, "key pointer is null");
+        return std::ptr::null_mut();
+    }
+    if key_len != 32 {
+        errors::set_last_error(
+            errors::ErrorCode::InvalidArgument,
+            format!("MLS state key must be exactly 32 bytes, got {key_len}"),
+        );
         return std::ptr::null_mut();
     }
 
@@ -83,10 +101,16 @@ pub unsafe extern "C" fn marmot_provider_open_at_path(path_ptr: *const c_char) -
         }
     };
 
-    match Provider::open_at_path(std::path::Path::new(path)) {
+    let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
+
+    match Provider::open_at_path(std::path::Path::new(path), key) {
         Ok(p) => Box::into_raw(Box::new(p)),
-        Err(e) => {
-            errors::set_last_error(errors::ErrorCode::StorageFailure, e);
+        Err(provider::OpenError::InvalidKey(msg)) => {
+            errors::set_last_error(errors::ErrorCode::InvalidMlsKey, msg);
+            std::ptr::null_mut()
+        }
+        Err(provider::OpenError::Other(msg)) => {
+            errors::set_last_error(errors::ErrorCode::StorageFailure, msg);
             std::ptr::null_mut()
         }
     }
@@ -120,6 +144,16 @@ pub extern "C" fn marmot_last_error_message() -> *const c_char {
     errors::last_error_ptr()
 }
 
+/// Returns the per-thread last-error code, or 0 if no error has been
+/// recorded since the last clear. Used by pointer-returning entry points
+/// (e.g. marmot_provider_open_at_path) to surface a typed code after a
+/// null return — managed callers can distinguish `InvalidMlsKey` (-11)
+/// from `StorageFailure` (-8) and throw the right exception.
+#[unsafe(no_mangle)]
+pub extern "C" fn marmot_last_error_code() -> i32 {
+    errors::last_error_code()
+}
+
 /// Frees an output buffer previously returned to the caller via an
 /// out-parameter (e.g. from marmot_build_keypackage). After this call,
 /// `ptr` is invalid.
@@ -137,7 +171,7 @@ pub unsafe extern "C" fn marmot_buffer_free(ptr: *mut u8, len: usize) {
 /// mismatched binaries.
 #[unsafe(no_mangle)]
 pub extern "C" fn marmot_abi_version() -> u32 {
-    5
+    6
 }
 
 // ──────────────────────────────────────────────────────────────────────

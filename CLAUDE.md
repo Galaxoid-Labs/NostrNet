@@ -40,7 +40,8 @@ src/
                                 via the in-tree Rust FFI bridge. Sole MLS provider.
 nostrnet-marmot-native/         Rust crate (cdylib + rlib). Wraps openmls 0.8 with
                                 a C ABI consumed by NostrNet.Marmot.Mls.Native via
-                                LibraryImport. SQLite-backed persistence.
+                                LibraryImport. SQLCipher-encrypted SQLite persistence
+                                (rusqlite `bundled-sqlcipher-vendored-openssl`).
 tests/                          xUnit; vectors as embedded resources where applicable.
 samples/                        CLI: gen post dm feed mine info verify vanity-* marmot-mls-smoke.
 ```
@@ -50,13 +51,27 @@ Single TFM `net10.0`. Central Package Management.
 warnings fail the build. MIT license, Galaxoid Labs.
 
 The Rust crate is required to build `NostrNet.Marmot.Mls.Native` from
-source: `cargo` must be on PATH, plus a C compiler (rusqlite's
-`bundled` feature compiles SQLite from C source via the `cc` crate —
-macOS: Xcode CLI tools; Linux: build-essential; Windows: VS Build
-Tools 2022 with the C++ workload). CI installs the Rust toolchain via
-`dtolnay/rust-toolchain@stable`; the C compilers are pre-installed on
-the GitHub Actions runners we use. Other shippable projects build
-without either.
+source. Prereqs:
+
+- `cargo` on PATH (`dtolnay/rust-toolchain@stable` in CI).
+- A C compiler — rusqlite's `bundled-sqlcipher-vendored-openssl`
+  feature compiles SQLCipher AND OpenSSL from C source via the `cc`
+  crate. macOS: Xcode CLI tools; Linux: build-essential; Windows: VS
+  Build Tools 2022 with the C++ workload.
+- **Perl** with the `IPC::Cmd` module, used by OpenSSL's `Configure`.
+  macOS / Linux: system perl is fine. Windows: use **Strawberry Perl**
+  (`C:\Strawberry\perl\bin\perl.exe`). The MSBuild CargoBuild target
+  in `NostrNet.Marmot.Mls.Native.csproj` automatically prepends that
+  path to PATH when present — GitHub Actions `windows-latest` runners
+  have it preinstalled at the same location, so CI and local Windows
+  builds match. Git-bash's bundled Perl ships without IPC::Cmd and
+  will fail the OpenSSL build if it gets picked up first.
+
+The first cargo build downloads + compiles OpenMLS, SQLCipher, and
+OpenSSL from source — expect ~15 minutes wall-clock on a cold cache.
+Incremental rebuilds finish in seconds. Other shippable projects
+(Core, Crypto, Relay, Client, Marmot, Blossom) build without any of
+this — only the Native package pulls Rust in.
 
 ## Locked-in decisions
 
@@ -248,7 +263,12 @@ primitive for apps.
 
 State persistence:
 - `new OpenMlsProvider()` — in-memory SQLite (lost on dispose).
-- `OpenMlsProvider.OpenAtPath(path)` — file-backed SQLite. State survives restart.
+- `OpenMlsProvider.OpenAtPath(path, ReadOnlySpan<byte> rawKey)` — file-backed
+  SQLCipher SQLite, encrypted at rest with the supplied 32-byte AES-256 key
+  (caller derives via HKDF or equivalent; library doesn't run a KDF). State
+  survives restart and is unreadable without the key. Wrong-key throws
+  `InvalidMlsKeyException`; wrong-length throws `ArgumentException`. Encryption
+  is mandatory for file-backed providers — there is no plain-SQLite path.
 
 Two distinct group identifiers, never conflate them:
 - **`nostr_group_id`** (32 bytes): the `h`-tag value on kind-445

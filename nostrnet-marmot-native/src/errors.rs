@@ -3,12 +3,13 @@
 // Per-thread last-error message storage, accessed via
 // `marmot_last_error_message()`. Same idea as errno.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CString, c_char};
 use std::ptr;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
+    static LAST_CODE: Cell<i32> = const { Cell::new(0) };
 }
 
 /// Negative i32 error codes returned by FFI entry points.
@@ -26,23 +27,38 @@ pub enum ErrorCode {
     StorageFailure = -8,
     InternalError = -9,
     OpenMlsFailure = -10,
+    /// The supplied key did not decrypt the SQLCipher MLS state file
+    /// (SQLite reports SQLITE_NOTADB on first read). Apps should treat
+    /// this as a wrong-passphrase case and prompt accordingly, distinct
+    /// from a generic StorageFailure.
+    InvalidMlsKey = -11,
 }
 
-/// Sets the per-thread last-error message and returns the given code.
+/// Sets the per-thread last-error message and code, returning the code.
 pub fn set_last_error(code: ErrorCode, message: impl Into<String>) -> i32 {
     let msg = message.into();
     let c_msg = CString::new(msg).unwrap_or_else(|_| CString::new("invalid error message").unwrap());
     LAST_ERROR.with(|cell| {
         *cell.borrow_mut() = Some(c_msg);
     });
-    code as i32
+    let c = code as i32;
+    LAST_CODE.with(|cell| cell.set(c));
+    c
 }
 
-/// Clears the per-thread last-error message.
+/// Clears the per-thread last-error message and code.
 pub fn clear_last_error() {
     LAST_ERROR.with(|cell| {
         *cell.borrow_mut() = None;
     });
+    LAST_CODE.with(|cell| cell.set(0));
+}
+
+/// Returns the per-thread last-error code, or 0 when no error is stored.
+/// Pointer-returning FFI entry points use this so callers can distinguish
+/// e.g. wrong-key from generic storage failures after a null return.
+pub fn last_error_code() -> i32 {
+    LAST_CODE.with(|cell| cell.get())
 }
 
 /// Returns a pointer to the current last-error message C string, or

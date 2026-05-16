@@ -157,18 +157,53 @@ post-removal traffic.
 `new OpenMlsProvider()` keeps state in an in-memory SQLite database —
 fine for tests, lost when the provider is disposed.
 
-For production, open the provider at a filesystem path. State (groups,
-signature keypairs, HPKE init keys) is persisted across process
-restarts:
+For production, open the provider at a filesystem path. The file is
+**SQLCipher-encrypted** with a 32-byte raw AES-256 key the caller
+supplies. State (groups, signature keypairs, HPKE init keys, current
+exporter secrets) is persisted across process restarts and encrypted
+at rest:
 
 ```csharp
-using var provider = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite");
-// ... use provider as normal ...
-// dispose. Next time the process starts:
-using var provider2 = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite");
-// All previously-built KeyPackages, joined groups, and current
-// exporter secrets are immediately available.
+using System.Security.Cryptography;
+
+// Derive a 32-byte raw key from the user's nsec via HKDF-SHA256.
+// The library doesn't run a KDF — it consumes these 32 bytes
+// verbatim as the SQLCipher AES key.
+Span<byte> nsecBytes = stackalloc byte[32];
+Span<byte> mlsKey = stackalloc byte[32];
+try
+{
+    privateKey.CopyTo(nsecBytes);
+    HKDF.DeriveKey(
+        HashAlgorithmName.SHA256,
+        ikm: nsecBytes,
+        output: mlsKey,
+        salt: "myapp:marmot-mls/v1"u8,
+        info: "mls-state-encryption"u8);
+
+    using var provider = OpenMlsProvider.OpenAtPath("/var/app/marmot.sqlite", mlsKey);
+    // ... use provider as normal ...
+}
+finally
+{
+    CryptographicOperations.ZeroMemory(nsecBytes);
+    CryptographicOperations.ZeroMemory(mlsKey);
+}
 ```
+
+Wrong-key reopens throw `InvalidMlsKeyException` — apps can prompt the
+user to re-enter a passphrase or fall back to a sign-in flow without
+catching a generic storage failure. A wrong-length key (anything other
+than exactly 32 bytes) throws `ArgumentException`.
+
+Why encryption is mandatory for file-backed providers: the MLS state DB
+holds the highest-value material on disk (current epoch exporter
+secrets, per-leaf signature keys, ratchet state). Forward secrecy is
+only meaningful if that file isn't readable by anyone who can read your
+local filesystem. SQLCipher closes the obvious file-leak vectors —
+OneDrive Backup, stolen laptop without BitLocker, forensic file
+extraction — without claiming to defend against same-user infostealer
+malware (out of scope for any chat client).
 
 ### Resuming conversations on startup
 

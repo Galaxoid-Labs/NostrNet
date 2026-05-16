@@ -31,7 +31,7 @@ internal static partial class NativeBindings
     public static partial IntPtr ProviderNew();
 
     [LibraryImport(Library, EntryPoint = "marmot_provider_open_at_path", StringMarshalling = StringMarshalling.Utf8)]
-    public static partial IntPtr ProviderOpenAtPath(string path);
+    public static unsafe partial IntPtr ProviderOpenAtPath(string path, byte* keyPtr, nuint keyLen);
 
     [LibraryImport(Library, EntryPoint = "marmot_provider_free")]
     public static partial void ProviderFree(IntPtr handle);
@@ -41,6 +41,9 @@ internal static partial class NativeBindings
 
     [LibraryImport(Library, EntryPoint = "marmot_last_error_message")]
     public static partial IntPtr LastErrorMessage();
+
+    [LibraryImport(Library, EntryPoint = "marmot_last_error_code")]
+    public static partial int LastErrorCode();
 
     [LibraryImport(Library, EntryPoint = "marmot_abi_version")]
     public static partial uint AbiVersion();

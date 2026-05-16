@@ -24,6 +24,7 @@ internal static class Errors
             -7 => new System.IO.InvalidDataException($"{operation}: serialization failure ({message})"),
             -8 => new InvalidOperationException($"{operation}: storage failure ({message})"),
             -10 => new InvalidOperationException($"{operation}: openmls failure ({message})"),
+            -11 => new InvalidMlsKeyException($"{operation}: invalid MLS state key ({message})"),
             _ => new InvalidOperationException($"{operation}: unknown error code {code} ({message})"),
         };
     }

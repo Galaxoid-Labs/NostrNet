@@ -56,9 +56,20 @@
   <Target Name="CargoBuild" BeforeTargets="BeforeBuild;BeforeResolveReferences">
     <PropertyGroup>
       <CargoBuildFlag Condition="'$(CargoProfile)' == 'release'">--release</CargoBuildFlag>
+      <!--
+        The Rust crate's openssl-sys build script needs a Perl with
+        IPC::Cmd. Git-bash's bundled Perl on Windows often lacks it,
+        but Strawberry Perl (preinstalled on GitHub Actions
+        windows-latest and a typical local install location) has the
+        full module set. Prepend its bin dirs to PATH when present so
+        `dotnet build`-driven cargo invocations find the right perl
+        before cmd.exe picks the git-bash one. Linux / macOS unchanged.
+      -->
+      <CargoCommand Condition="$([MSBuild]::IsOSPlatform('Windows')) AND Exists('C:\Strawberry\perl\bin\perl.exe')">set "PATH=C:\Strawberry\perl\bin;C:\Strawberry\c\bin;%25PATH%25" &amp;&amp; cargo build $(CargoBuildFlag)</CargoCommand>
+      <CargoCommand Condition="'$(CargoCommand)' == ''">cargo build $(CargoBuildFlag)</CargoCommand>
     </PropertyGroup>
     <Message Text="Building Rust crate ($(CargoProfile))…" Importance="high" />
-    <Exec Command="cargo build $(CargoBuildFlag)" WorkingDirectory="$(CargoCrateDir)" />
+    <Exec Command="$(CargoCommand)" WorkingDirectory="$(CargoCrateDir)" />
   </Target>
 
   <Target Name="InjectNativeLib"

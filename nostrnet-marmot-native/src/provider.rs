@@ -80,6 +80,24 @@ pub struct Provider {
     /// Path the provider was opened from, or `None` for in-memory.
     /// Used by VACUUM to open an exclusive connection for the rewrite.
     pub(crate) path: Option<PathBuf>,
+    /// Cached SQLCipher key for fresh connections (e.g. VACUUM). `None`
+    /// for in-memory providers. SQLCipher already holds the same bytes
+    /// in the pager's memory for our long-lived connections, so this
+    /// second copy doesn't broaden the exposure; it's zeroed on drop.
+    pub(crate) mls_key: Option<Vec<u8>>,
+}
+
+impl Drop for Provider {
+    fn drop(&mut self) {
+        if let Some(key) = self.mls_key.as_mut() {
+            // Best-effort zeroize. Compiler can't optimize this away
+            // because Vec::fill writes through a pointer the destructor
+            // doesn't observe to be dead.
+            for b in key.iter_mut() {
+                *b = 0;
+            }
+        }
+    }
 }
 
 impl Provider {
@@ -89,24 +107,45 @@ impl Provider {
             Connection::open_in_memory().expect("rusqlite open_in_memory (openmls)");
         let meta_conn =
             rusqlite::Connection::open_in_memory().expect("rusqlite open_in_memory (meta)");
-        Self::open(openmls_conn, meta_conn, None)
+        Self::open(openmls_conn, meta_conn, None, None)
     }
 
-    /// Open a provider with state persisted at the given filesystem path.
-    /// Returns an error if the path cannot be opened or the schema
-    /// migrations fail.
-    pub fn open_at_path(path: &Path) -> Result<Self, String> {
+    /// Open a provider with state persisted at the given filesystem path,
+    /// SQLCipher-encrypted with the supplied 32-byte raw key. Returns:
+    /// - `Ok(provider)` on success (new or correctly-keyed existing file)
+    /// - `Err(OpenError::InvalidKey(..))` when the file exists but the
+    ///   key doesn't decrypt it (SQLite reports SQLITE_NOTADB)
+    /// - `Err(OpenError::Other(..))` for any other open / migration error
+    ///
+    /// The key must be exactly 32 bytes (256-bit AES key for SQLCipher).
+    /// Use HKDF-SHA256 or equivalent at the caller layer to derive it
+    /// from a user passphrase or nsec; the library doesn't run a KDF.
+    pub fn open_at_path(path: &Path, key: &[u8]) -> Result<Self, OpenError> {
+        if key.len() != 32 {
+            return Err(OpenError::Other(format!(
+                "MLS state key must be exactly 32 bytes, got {}",
+                key.len()
+            )));
+        }
+
         let openmls_conn = Connection::open(path)
-            .map_err(|e| format!("open SQLite at {}: {e} (openmls)", path.display()))?;
+            .map_err(|e| OpenError::Other(format!("open SQLite at {}: {e} (openmls)", path.display())))?;
+        apply_key_and_probe(&openmls_conn, key)
+            .map_err(|e| classify_open_error(e, path, "openmls"))?;
+
         let meta_conn = rusqlite::Connection::open(path)
-            .map_err(|e| format!("open SQLite at {}: {e} (marmot meta)", path.display()))?;
-        Ok(Self::open(openmls_conn, meta_conn, Some(path.to_path_buf())))
+            .map_err(|e| OpenError::Other(format!("open SQLite at {}: {e} (marmot meta)", path.display())))?;
+        apply_key_and_probe(&meta_conn, key)
+            .map_err(|e| classify_open_error(e, path, "marmot meta"))?;
+
+        Ok(Self::open(openmls_conn, meta_conn, Some(path.to_path_buf()), Some(key.to_vec())))
     }
 
     fn open(
         openmls_conn: Connection,
         meta_conn: rusqlite::Connection,
         path: Option<PathBuf>,
+        mls_key: Option<Vec<u8>>,
     ) -> Self {
         let mut storage = SqliteStorageProvider::<JsonCodec, Connection>::new(openmls_conn);
         storage
@@ -133,6 +172,7 @@ impl Provider {
             marmot_meta: std::sync::Mutex::new(meta_conn),
             ffi_lock: std::sync::Mutex::new(()),
             path,
+            mls_key,
         }
     }
 }
@@ -170,4 +210,64 @@ impl Default for Provider {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Distinguishes a wrong-key failure (so the FFI layer can map it to
+/// `ErrorCode::InvalidMlsKey` and the C# side to `InvalidMlsKeyException`)
+/// from any other open / migration error.
+pub enum OpenError {
+    InvalidKey(String),
+    Other(String),
+}
+
+/// Apply `PRAGMA key = "x'<hex>'"` to a fresh rusqlite Connection so
+/// it can read SQLCipher-encrypted pages. Caller-visible from inside
+/// the crate so one-shot helpers (e.g. VACUUM) that open their own
+/// short-lived connection can re-apply the key from the cached copy
+/// on Provider without duplicating the hex-formatting logic.
+pub(crate) fn apply_key_for_fresh_connection(
+    conn: &rusqlite::Connection,
+    key: &[u8],
+) -> Result<(), rusqlite::Error> {
+    apply_key_and_probe(conn, key)
+}
+
+/// Apply `PRAGMA key = "x'<hex>'"` to set the SQLCipher decryption key,
+/// then probe the schema to detect a wrong-key case immediately
+/// (SQLite returns SQLITE_NOTADB on the first read with a mismatched key).
+/// On a brand-new file the probe returns 0 rows and succeeds — same as
+/// any correctly-keyed existing file.
+fn apply_key_and_probe(conn: &rusqlite::Connection, key: &[u8]) -> Result<(), rusqlite::Error> {
+    // Hex-encode the 32-byte key into the SQLCipher raw-key blob literal
+    // form. PRAGMA cannot use bound parameters, so we format the SQL
+    // directly — the key bytes are fully under caller control, no
+    // user-supplied string ever reaches this path.
+    let mut hex = String::with_capacity(key.len() * 2);
+    for b in key {
+        use std::fmt::Write;
+        let _ = write!(&mut hex, "{:02x}", b);
+    }
+    let pragma = format!("PRAGMA key = \"x'{hex}'\";");
+    conn.execute_batch(&pragma)?;
+
+    // Probe — SELECT count(*) FROM sqlite_master forces the first page
+    // read which decrypts (or fails) under SQLCipher. New databases
+    // succeed too (empty sqlite_master = count 0).
+    let _: i64 = conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get(0))?;
+    Ok(())
+}
+
+fn classify_open_error(err: rusqlite::Error, path: &Path, label: &str) -> OpenError {
+    // SQLITE_NOTADB (code 26) is SQLCipher's wrong-key signal on the
+    // first decrypt attempt. Any other error path (I/O, permission,
+    // schema migration) falls through to Other.
+    if let rusqlite::Error::SqliteFailure(e, _) = &err {
+        if e.code == rusqlite::ErrorCode::NotADatabase {
+            return OpenError::InvalidKey(format!(
+                "wrong key for SQLCipher MLS state file at {} ({label})",
+                path.display()
+            ));
+        }
+    }
+    OpenError::Other(format!("open SQLite at {} ({label}): {err}", path.display()))
 }

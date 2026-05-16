@@ -9,6 +9,11 @@ namespace NostrNet.Marmot.Mls.Native.Tests;
 
 public class PersistenceTests
 {
+    // 32-byte test key. Real apps derive this from the user's nsec or
+    // passphrase via HKDF-SHA256; tests use a deterministic constant so
+    // reopen-with-same-key works without state sharing.
+    private static readonly byte[] TestMlsKey = Enumerable.Repeat((byte)0xAB, 32).ToArray();
+
     private static string TempSqlitePath()
     {
         return Path.Combine(
@@ -35,8 +40,8 @@ public class PersistenceTests
             byte[] slot1MessageBytes;
 
             {
-                using var aliceProv = OpenMlsProvider.OpenAtPath(aliceDb);
-                using var bobProv = OpenMlsProvider.OpenAtPath(bobDb);
+                using var aliceProv = OpenMlsProvider.OpenAtPath(aliceDb, TestMlsKey);
+                using var bobProv = OpenMlsProvider.OpenAtPath(bobDb, TestMlsKey);
 
                 var bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(bobProv, bobKey, null, relays);
                 var started = await MarmotChat.StartConversationAsync(
@@ -61,8 +66,8 @@ public class PersistenceTests
 
             // ── Phase 2: reopen both providers from the same paths, confirm
             //    state is restored.
-            using var aliceProv2 = OpenMlsProvider.OpenAtPath(aliceDb);
-            using var bobProv2 = OpenMlsProvider.OpenAtPath(bobDb);
+            using var aliceProv2 = OpenMlsProvider.OpenAtPath(aliceDb, TestMlsKey);
+            using var bobProv2 = OpenMlsProvider.OpenAtPath(bobDb, TestMlsKey);
 
             byte[] aliceExpAfter = await aliceProv2.CurrentExporterSecretAsync(groupId);
             byte[] bobExpAfter = await bobProv2.CurrentExporterSecretAsync(groupId);
@@ -104,7 +109,7 @@ public class PersistenceTests
 
             NostrNet.Events.NostrEvent bobKpEvent;
             {
-                using var bobProv = OpenMlsProvider.OpenAtPath(bobDb);
+                using var bobProv = OpenMlsProvider.OpenAtPath(bobDb, TestMlsKey);
                 bobKpEvent = await MarmotChat.BuildKeyPackageEventAsync(
                     bobProv, bobKey, null, relays);
             }
@@ -116,7 +121,7 @@ public class PersistenceTests
                 aliceProv, aliceKey, bobKpEvent, "x", relays);
 
             // Bob reopens his provider and accepts.
-            using var bobProv2 = OpenMlsProvider.OpenAtPath(bobDb);
+            using var bobProv2 = OpenMlsProvider.OpenAtPath(bobDb, TestMlsKey);
             var bobConvo = await MarmotChat.TryAcceptInviteAsync(
                 bobProv2, bobKey, started.WelcomeGiftWrap);
             Assert.NotNull(bobConvo);

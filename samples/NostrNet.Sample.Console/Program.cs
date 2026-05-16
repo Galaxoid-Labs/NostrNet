@@ -484,9 +484,37 @@ async Task<int> MarmotChatAsync(string[] argv)
         relays.AddRange(DefaultRelays);
     }
 
-    var provider = statePath is null
-        ? new OpenMlsProvider()
-        : OpenMlsProvider.OpenAtPath(statePath);
+    OpenMlsProvider provider;
+    if (statePath is null)
+    {
+        provider = new OpenMlsProvider();
+    }
+    else
+    {
+        // Derive a 32-byte raw key from the user's nsec via HKDF-SHA256.
+        // Real apps would use a per-app salt + version-tagged info string
+        // (so future re-keying remains possible); the sample uses simple
+        // constants for clarity. The key feeds SQLCipher directly — the
+        // library doesn't run a KDF on it.
+        Span<byte> keyBytes = stackalloc byte[32];
+        Span<byte> mlsKey = stackalloc byte[32];
+        try
+        {
+            key.CopyTo(keyBytes);
+            System.Security.Cryptography.HKDF.DeriveKey(
+                System.Security.Cryptography.HashAlgorithmName.SHA256,
+                ikm: keyBytes,
+                output: mlsKey,
+                salt: "NostrNet.Sample.Console:marmot-mls/v1"u8,
+                info: "mls-state-encryption"u8);
+            provider = OpenMlsProvider.OpenAtPath(statePath, mlsKey);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(keyBytes);
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(mlsKey);
+        }
+    }
 
     Console.WriteLine($"identity: {key.PublicKey.ToNpub()}");
     Console.WriteLine($"relays:   {string.Join(", ", relays)}");

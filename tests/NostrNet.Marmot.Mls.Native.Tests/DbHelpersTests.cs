@@ -10,6 +10,8 @@ namespace NostrNet.Marmot.Mls.Native.Tests;
 
 public class DbHelpersTests
 {
+    private static readonly byte[] TestMlsKey = Enumerable.Repeat((byte)0xCD, 32).ToArray();
+
     private static string TempSqlitePath() =>
         Path.Combine(Path.GetTempPath(), $"nn-dbhelpers-{Guid.NewGuid():N}.db");
 
@@ -43,7 +45,7 @@ public class DbHelpersTests
         {
             using var aliceKey = PrivateKey.Generate();
             using var bobKey = PrivateKey.Generate();
-            using var alice = OpenMlsProvider.OpenAtPath(path);
+            using var alice = OpenMlsProvider.OpenAtPath(path, TestMlsKey);
             using var bob = new OpenMlsProvider();
             var relays = new[] { "wss://relay.example" };
 
@@ -90,7 +92,7 @@ public class DbHelpersTests
         var path = TempSqlitePath();
         try
         {
-            using var file = OpenMlsProvider.OpenAtPath(path);
+            using var file = OpenMlsProvider.OpenAtPath(path, TestMlsKey);
             await file.VacuumAsync();
         }
         finally
@@ -105,7 +107,7 @@ public class DbHelpersTests
     public async Task WipeState_DeletesFile_AndDisposesProvider()
     {
         var path = TempSqlitePath();
-        var prov = OpenMlsProvider.OpenAtPath(path);
+        var prov = OpenMlsProvider.OpenAtPath(path, TestMlsKey);
         // touch the file
         await prov.StateInfoAsync();
         Assert.True(File.Exists(path));

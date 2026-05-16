@@ -41,16 +41,27 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
     public string? Path => _path;
 
     /// <summary>
-    /// Opens (or creates) a SQLite-backed provider at <paramref name="path"/>.
-    /// State persists across process restarts — reopening the same path
+    /// Opens (or creates) a SQLCipher-encrypted SQLite-backed provider at
+    /// <paramref name="path"/>. State persists across process restarts —
+    /// reopening the same path with the same <paramref name="rawKey"/>
     /// recovers all groups, signature keypairs, and HPKE init keys
     /// previously stored.
     /// </summary>
+    /// <param name="path">Filesystem path. Created if it doesn't exist.</param>
+    /// <param name="rawKey">
+    /// The 32-byte AES-256 raw key for SQLCipher (256 bits). Apps derive
+    /// it at their own layer (HKDF-SHA256 over a user passphrase or
+    /// nsec, etc.) — the library doesn't run a KDF. Zero the buffer
+    /// after this call returns; the key now lives inside the SQLCipher
+    /// pager's memory and the caller's copy isn't needed.
+    /// </param>
+    /// <exception cref="ArgumentException"><paramref name="rawKey"/> isn't exactly 32 bytes.</exception>
+    /// <exception cref="InvalidMlsKeyException">The file exists at <paramref name="path"/> but <paramref name="rawKey"/> does not decrypt it.</exception>
     /// <exception cref="InvalidOperationException">Path can't be opened or schema migrations failed.</exception>
-    public static OpenMlsProvider OpenAtPath(string path)
+    public static OpenMlsProvider OpenAtPath(string path, ReadOnlySpan<byte> rawKey)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
-        return new OpenMlsProvider(ProviderHandle.OpenAtPath(path), path);
+        return new OpenMlsProvider(ProviderHandle.OpenAtPath(path, rawKey), path);
     }
 
     /// <summary>Returns the FFI ABI version reported by the native library.</summary>
