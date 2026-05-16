@@ -18,7 +18,9 @@ src/
                                 Filter (with local-side Matches() for stores),
                                 RelayInformation (NIP-11), Nip05. Includes
                                 Storage/ subnamespace: INostrEventStore +
-                                MemoryEventStore — local dedup, NIP-01
+                                EventStoreBase (spec semantics) +
+                                MemoryEventStore (reference subclass) —
+                                local dedup, NIP-01
                                 replaceable / addressable upsert, NIP-09
                                 tombstones, NIP-40 expiration, NIP-01
                                 ephemeral fan-out.
@@ -76,15 +78,27 @@ without either.
    provider (`NostrNet.Marmot.Mls.Reference`) was a stepping stone and is
    gone. Don't reintroduce a pure-managed MLS — channel proposals through
    `IMarmotMlsProvider` so OpenMLS does the work.
-8. **Storage is an interface, not a feature.** `INostrEventStore` lives
-   in `NostrNet.Relay/Storage/` next to `Filter` (which it depends on
-   for `Matches`). `MemoryEventStore` is the only in-tree impl.
+8. **Storage = interface contract + base class scaffolding.**
+   `INostrEventStore` is the public contract (NostrNet.Relay/Storage/),
+   `EventStoreBase` is the abstract class that implements the spec
+   semantics layer (NIP-01 dedup / replaceable / addressable upsert,
+   NIP-09 tombstones, NIP-40 expiration, ephemeral fan-out, observer
+   registry, snapshot+live merge for ObserveAsync), and
+   `MemoryEventStore` is the reference subclass (~140 lines, all raw
+   `ConcurrentDictionary` plumbing). **New backends should derive from
+   `EventStoreBase`** and implement seven raw-persistence primitives:
+   `TryAddRaw`, `TryRemoveRaw`, `TryGetRaw`, `ScanByAuthorAndKind`,
+   `ScanByAuthorKindAndIdentifier`, `ScanForQuery`, `CountRaw` (plus
+   optional `OnDispose`). Don't implement `INostrEventStore` directly —
+   the contract is intentionally semantics-strict and re-deriving NIP-09
+   tombstone rehydration / NIP-40 expiration filtering / observer fan-out
+   per backend is exactly the burden the base class eliminates.
    `IMarmotMlsProvider`-style: future `NostrNet.Storage.Sqlite` etc. are
-   separate packages implementing the same interface. The interface
-   semantics (NIP-01 replaceable + addressable upsert, NIP-09
-   tombstones, NIP-40 expiration, NIP-01 ephemeral fan-out-but-no-persist)
-   are spec-level guarantees; don't add `MemoryEventStoreOptions`-style
-   knobs that diverge per-implementation. **`NostrClient.SubscribeAsync`
+   separate packages subclassing `EventStoreBase`. Don't add
+   `MemoryEventStoreOptions`-style knobs that diverge per-implementation —
+   spec-level guarantees stay uniform. The interface stays public so
+   exotic backends (e.g. a network-cached store) that genuinely can't fit
+   the base's shape can still implement it directly. **`NostrClient.SubscribeAsync`
    auto-dedups when a store is attached**; `AttachAsync` is the
    fire-and-forget "fill the store" entry. The recommended app pattern
    is `AttachAsync` to subscribe + `store.ObserveAsync` to read.

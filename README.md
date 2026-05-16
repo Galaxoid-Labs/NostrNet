@@ -1513,11 +1513,61 @@ property, one method) and the generic extensions light up automatically.
 
 ### Custom storage backends
 
-Implement `INostrEventStore` and pass it to `WithEventStore(...)`. The
-interface is intentionally small (`StoreAsync`, `GetAsync`, `QueryAsync`,
-`ObserveAsync`, `CountAsync`) so any backend works — SQLite via
-`Microsoft.Data.Sqlite`, LiteDB, Realm, in-process Redis, etc. A
-dedicated `NostrNet.Storage.Sqlite` package is on the roadmap.
+You can implement `INostrEventStore` from scratch, but you'd be on the hook
+for re-deriving the entire NIP-01 / NIP-09 / NIP-40 semantics layer
+(dedup, replaceable / addressable upsert, deletion tombstones, expiration
+filtering, ephemeral fan-out, observer registry, snapshot+live merge for
+`ObserveAsync`). Don't.
+
+Instead, derive from **`EventStoreBase`** and implement seven raw-persistence
+primitives:
+
+```csharp
+public sealed class SqliteEventStore : EventStoreBase
+{
+    protected override bool TryAddRaw(NostrEvent ev)               { /* INSERT, return false on PK conflict */ }
+    protected override bool TryRemoveRaw(EventId id)               { /* DELETE WHERE id = ? */ }
+    protected override NostrEvent? TryGetRaw(EventId id)           { /* SELECT WHERE id = ? */ }
+    protected override IEnumerable<NostrEvent> ScanByAuthorAndKind(PublicKey author, int kind) { /* for replaceable upsert */ }
+    protected override IEnumerable<NostrEvent> ScanByAuthorKindAndIdentifier(PublicKey author, int kind, string identifier) { /* for addressable upsert + a-tag deletion */ }
+    protected override IEnumerable<NostrEvent> ScanForQuery(Filter filter) { /* push as much of `filter` into SQL as possible */ }
+    protected override int CountRaw()                              { /* SELECT COUNT(*) */ }
+    protected override void OnDispose()                            { /* close connection */ }
+}
+```
+
+`EventStoreBase` owns everything else:
+
+- **NIP-01 dedup** by event id.
+- **Replaceable upsert** for kinds 0, 3, 10000–19999 keyed by `(kind, author)`;
+  calls your `ScanByAuthorAndKind`, compares `created_at`, decides
+  `Stored` / `Replaced` / `Outdated`.
+- **Parameterized-replaceable upsert** for kinds 30000–39999 keyed by
+  `(kind, author, d-tag)`; same logic via `ScanByAuthorKindAndIdentifier`.
+- **NIP-09 tombstones** — `e`-tag deletions add to an in-memory tombstone
+  set; future `StoreAsync` calls for the same id return `Deleted`. The
+  tombstone set is rehydrated lazily on first use by scanning your
+  persisted kind-5 events via `ScanForQuery`, so persistent backends get
+  correct semantics across restarts without needing their own tombstones
+  table.
+- **NIP-09 `a`-tag deletions** — evicts the matching addressable if its
+  `created_at` is older than the deletion; doesn't tombstone (newer events
+  at the same address are still storable).
+- **NIP-40 expiration** — events with `expiration` in the past are dropped
+  at store time and filtered from queries as wall-clock advances.
+- **Ephemeral fan-out** (kinds 20000–29999) — never persisted; delivered
+  live to `ObserveAsync` subscribers.
+- **Observer registry + snapshot+live merge** for `ObserveAsync`.
+- **Write serialization** via an internal `SemaphoreSlim`. Reads are
+  lock-free; your primitives must be thread-safe to be called concurrently
+  with each other and concurrent with the (locked) write path.
+
+`MemoryEventStore` is the reference subclass — ~140 lines, all "translate
+the primitives to a `ConcurrentDictionary`." Adding a SQLite or LiteDB
+backend is roughly the same shape: write the schema, translate the seven
+primitives to your storage API, ship. The `MemoryEventStore` test suite
+under `tests/NostrNet.Relay.Tests/Storage/` doubles as an interop suite —
+point your subclass at the same tests and you've got a compliant store.
 
 ---
 

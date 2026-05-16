@@ -319,6 +319,41 @@ await foreach (var p in store.QueryAsync<Profile>())
 var meProfile = await store.GetAsync<Profile>(key.PublicKey);
 ```
 
+### Writing a custom event store backend
+
+Don't implement `INostrEventStore` from scratch — derive from
+**`EventStoreBase`**. The base owns the entire NIP-01 / NIP-09 / NIP-40
+semantics layer (dedup, replaceable / addressable upsert, deletion
+tombstones, expiration filtering, ephemeral fan-out, observer registry,
+snapshot+live merge for `ObserveAsync`). Your subclass only implements
+seven raw-persistence primitives:
+
+```csharp
+public sealed class SqliteEventStore : EventStoreBase
+{
+    protected override bool TryAddRaw(NostrEvent ev)               { /* INSERT */ }
+    protected override bool TryRemoveRaw(EventId id)               { /* DELETE WHERE id = ? */ }
+    protected override NostrEvent? TryGetRaw(EventId id)           { /* SELECT WHERE id = ? */ }
+    protected override IEnumerable<NostrEvent> ScanByAuthorAndKind(PublicKey author, int kind) { /* replaceable upsert */ }
+    protected override IEnumerable<NostrEvent> ScanByAuthorKindAndIdentifier(PublicKey author, int kind, string id) { /* addressable upsert + a-tag delete */ }
+    protected override IEnumerable<NostrEvent> ScanForQuery(Filter filter) { /* push as much of `filter` into SQL as possible */ }
+    protected override int CountRaw()                              { /* SELECT COUNT(*) */ }
+    protected override void OnDispose()                            { /* close connection */ }
+}
+```
+
+That's it. Tombstones are derived automatically from your persisted
+kind-5 events on first use (the base scans them via your `ScanForQuery`
+and builds an in-memory tombstone set), so persistent backends get
+correct NIP-09 semantics across restarts without a separate tombstones
+table. Writes are serialized by the base's internal semaphore; reads are
+lock-free so your primitives must be thread-safe.
+
+`MemoryEventStore` is the reference subclass (~140 lines, all
+"translate primitives to a `ConcurrentDictionary`"). Point your subclass
+at `tests/NostrNet.Relay.Tests/Storage/MemoryEventStoreTests.cs` to
+validate compliance.
+
 ## NIP-17 direct messages
 
 `SendDirectMessageAsync` handles the full rumor → seal → gift-wrap chain
