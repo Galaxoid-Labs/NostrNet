@@ -479,9 +479,33 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
     /// <summary>
     /// Sends a UTF-8 text message in <paramref name="conversation"/>.
     /// Encrypts via the MLS application ratchet, wraps in a kind-445
-    /// GroupEvent, and publishes.
+    /// GroupEvent, publishes, and surfaces the own send through the
+    /// same channels (<see cref="SubscribeAsync"/> + the configured
+    /// <see cref="IMarmotMessageLog"/>) that inbound messages flow
+    /// through. Returns the published kind-445 event so callers can
+    /// correlate by event id.
     /// </summary>
-    public async Task SendAsync(
+    /// <remarks>
+    /// <para>
+    /// Apps render their own messages and peer messages through the
+    /// same <see cref="MarmotMessageReceived"/> code path —
+    /// <c>msg.Sender.Equals(client.Identity)</c> is the "from me" flag.
+    /// No app-side echo or synthetic-id plumbing required.
+    /// </para>
+    /// <para>
+    /// Why this is necessary at the library layer: when our own
+    /// kind-445 is broadcast back to us by the relay, the receive
+    /// pump can't decrypt it. MLS application-message encryption uses
+    /// a per-leaf outbound ratchet; the sender's provider has already
+    /// advanced past the generation the receiver-side decrypt would
+    /// need, and there's no inverse "decrypt my own ciphertext"
+    /// operation. So apps either get a one-direction render path
+    /// (peer messages only — broken) or have to fabricate their own
+    /// echo with synthetic ids that don't match real relay-delivered
+    /// ids. Library-side emission closes that asymmetry cleanly.
+    /// </para>
+    /// </remarks>
+    public async Task<NostrEvent> SendAsync(
         MarmotConversation conversation,
         string text,
         CancellationToken ct = default)
@@ -492,6 +516,57 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
 
         var ev = await MarmotChat.EncryptMessageAsync(_provider, conversation, _identityKey, text, ct).ConfigureAwait(false);
         await _relay.PublishAsync(ev, ct).ConfigureAwait(false);
+
+        // Build the local MarmotMessageReceived for our own send. The
+        // EventId matches the kind-445 that just hit the wire, so any
+        // future receive-side dedup (or app-side correlation by event id)
+        // works without divergence. Sender is our identity — what
+        // MarmotChat.ExtractChatRumor would have surfaced if MLS could
+        // decrypt our own send.
+        var own = new MarmotMessageReceived(
+            Conversation: conversation,
+            EventId: ev.Id,
+            Sender: _identityKey.PublicKey,
+            Plaintext: text,
+            ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt));
+
+        // Append to the message log first so a subscriber that reads back
+        // via GetLastMessageAsync immediately after seeing the inbound
+        // event finds the same record. Mirror the receive path's
+        // fail-soft policy — a broken log backend shouldn't poison send.
+        if (_messageLog is not null)
+        {
+            try
+            {
+                await _messageLog.AppendAsync(own, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+            }
+        }
+
+        // Surface to live subscribers. The channel may not be initialized
+        // yet (caller hasn't started SubscribeAsync) — in that case the
+        // send still completes, we just have no one to notify yet. Apps
+        // that read back via LoadHistoryAsync on startup still see it
+        // via the log.
+        if (_inboundChannel is not null)
+        {
+            try
+            {
+                await _inboundChannel.Writer.WriteAsync(own, ct).ConfigureAwait(false);
+            }
+            catch (System.Threading.Channels.ChannelClosedException)
+            {
+                // Disposal raced with this send; the user is leaving anyway.
+            }
+        }
+
+        return ev;
     }
 
     // ──────────────────────────────────────────────────────────────

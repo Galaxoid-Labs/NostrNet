@@ -657,8 +657,29 @@ to use as identity.
 ### Send
 
 ```csharp
-await marmot.SendAsync(convo, "hello group");
+NostrEvent published = await marmot.SendAsync(convo, "hello group");
+// The returned event is the kind-445 wire event — use published.Id when
+// correlating with the inbound channel echo or with a persisted store.
 ```
+
+**Own sends surface through `SubscribeAsync` on the sender's side too.**
+MLS application-message encryption is one-way per leaf — the sender's
+provider can't decrypt its own ciphertext when it comes back via the
+relay broadcast. The library compensates by emitting the
+`MarmotMessageReceived` directly to the inbound channel (and the
+message log) at publish time. Apps render their own messages and peer
+messages through one code path:
+
+```csharp
+case MarmotMessageReceived msg:
+    bool isMe = msg.Sender?.Equals(marmot.Identity) == true;
+    Render(msg.Plaintext, isMe ? Direction.Outbound : Direction.Inbound);
+    break;
+```
+
+No app-side echo, no synthetic-id plumbing. `msg.EventId` matches the
+real kind-445 event id on the wire, so persistence keyed on event id
+stays consistent across own/peer messages and across sessions.
 
 The plaintext fed to MLS is a JSON-serialized unsigned Nostr kind-9
 rumor; the receive path unwraps it transparently before exposing

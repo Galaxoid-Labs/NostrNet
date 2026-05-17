@@ -418,6 +418,42 @@ common in long-lived inboxes:
 Apps should treat `null` as "skip silently" rather than as an
 error to surface, the way the `marmot-chat` sample does.
 
+### Send semantics — own sends surface through the inbound channel
+
+`NostrMarmotClient.SendAsync` returns `Task<NostrEvent>` (the
+published kind-445 wire event) AND **emits a `MarmotMessageReceived`
+to the sender's own `SubscribeAsync` stream and configured message
+log**.
+
+This is necessary because MLS application-message encryption is
+one-way per leaf — the sender's provider can't decrypt its own
+ciphertext when the relay broadcasts the kind-445 back. Without
+library-side own-send echo, apps would either render only inbound
+(broken) or fabricate synthetic ids that diverge from real
+relay-delivered event ids.
+
+The result: apps render their own messages and peer messages through
+one code path, using `msg.Sender.Equals(client.Identity)` as the
+"is from me" flag:
+
+```csharp
+case MarmotMessageReceived msg:
+    bool isMe = msg.Sender?.Equals(client.Identity) == true;
+    chat.AddRow(msg.Plaintext, isMe ? Side.Outgoing : Side.Incoming);
+    break;
+```
+
+`msg.EventId` matches the real kind-445 id on the wire, so persistence
+keyed on event id stays consistent across own + peer messages and
+across sessions (`LoadHistoryAsync` on next startup replays the user's
+own sends from the message log).
+
+The kind-445 the sender publishes also comes back through the receive
+pump via relay broadcast. The pump tries to decrypt, fails (MLS won't
+decrypt own sends), parks the event, eventually evicts. Bounded memory
+churn that doesn't affect correctness; the message itself surfaced
+exactly once via the library-side emission at publish time.
+
 ### Automatic KeyPackage rotation
 
 MIP-00 says clients SHOULD rotate KeyPackages periodically and after

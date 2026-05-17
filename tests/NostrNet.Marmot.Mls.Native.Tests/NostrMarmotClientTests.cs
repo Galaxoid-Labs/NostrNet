@@ -584,6 +584,89 @@ public class NostrMarmotClientTests
     }
 
     [Fact]
+    public async Task SendAsync_SurfacesOwnSendThroughSubscribeAsync()
+    {
+        // MLS application-message ratchets are one-way per leaf; our
+        // own provider can't decrypt our own send when it comes back
+        // via the relay broadcast. The library compensates by emitting
+        // the MarmotMessageReceived directly to the inbound channel
+        // when SendAsync publishes. Apps render own + peer messages
+        // through one code path; no synthetic-id echo needed.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "own-send-echo");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        // Alice sends; SendAsync now returns the published kind-445 event.
+        var publishedEv = await alice.SendAsync(aliceConvo, "hello from me");
+        Assert.Equal(NostrNet.Marmot.MarmotKinds.GroupEvent, publishedEv.Kind);
+
+        // Alice's own SubscribeAsync should yield the MarmotMessageReceived
+        // with Sender = alice (the "is from me" signal apps use to render).
+        var aliceOwnRender = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        Assert.Equal("hello from me", aliceOwnRender.Plaintext);
+        Assert.Equal(aliceKey.PublicKey, aliceOwnRender.Sender);
+        Assert.Equal(publishedEv.Id, aliceOwnRender.EventId);
+
+        // Bob still gets it the normal way — MLS decrypts cross-leaf fine.
+        var bobReceived = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+        Assert.Equal("hello from me", bobReceived.Plaintext);
+        Assert.Equal(aliceKey.PublicKey, bobReceived.Sender);
+    }
+
+    [Fact]
+    public async Task SendAsync_AppendsOwnSendToMessageLog()
+    {
+        // Companion to the SubscribeAsync echo: own sends must also
+        // hit the configured IMarmotMessageLog so LoadHistoryAsync on
+        // a future session replays them just like peer messages.
+        // Without this, app-side history shows only inbound after a
+        // restart — broken for the user's own chat record.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+        var log = new MemoryMarmotMessageLog();
+
+        await using var alice = await NostrMarmotClient.Builder(aliceKey, new OpenMlsProvider())
+            .UseRelayBridge(relay)
+            .AutoPublishKeyPackage(false)
+            .RotateKeyPackageAfterAccept(false)
+            .WithMessageLog(log)
+            .ConnectAsync();
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "own-send-log");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "log me");
+
+        // alice's log should now contain her own send, keyed on the
+        // real kind-445 event id.
+        var stored = await log.GetLastAsync(aliceConvo.NostrGroupId);
+        Assert.NotNull(stored);
+        Assert.Equal("log me", stored!.Plaintext);
+        Assert.Equal(aliceKey.PublicKey, stored.Sender);
+    }
+
+    [Fact]
     public async Task AcceptInvite_DeletesConsumedKeyPackageBundle_SoReDeliveryIsFiltered()
     {
         // The bug: accepting a welcome left the consumed KP bundle in
