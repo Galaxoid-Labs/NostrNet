@@ -374,6 +374,28 @@ public sealed class OpenMlsProvider : IMarmotMlsProvider, IDisposable
     }
 
     /// <inheritdoc/>
+    public unsafe Task<bool> CanJoinWelcomeAsync(
+        ReadOnlyMemory<byte> mlsWelcomeBytes,
+        CancellationToken ct = default)
+    {
+        var span = mlsWelcomeBytes.Span;
+        byte canJoin = 0;
+        int rc;
+        fixed (byte* pin = span)
+        {
+            rc = NativeBindings.WelcomeJoinState(
+                _handle.DangerousPointer, pin, (nuint)span.Length, out canJoin);
+        }
+
+        if (rc != 0)
+        {
+            Errors.Throw(rc, nameof(CanJoinWelcomeAsync));
+        }
+
+        return Task.FromResult(canJoin != 0);
+    }
+
+    /// <inheritdoc/>
     public unsafe Task<RemoveMembersResult> RemoveMembersAsync(
         ReadOnlyMemory<byte> nostrGroupId,
         IReadOnlyList<PublicKey> peerPubkeys,

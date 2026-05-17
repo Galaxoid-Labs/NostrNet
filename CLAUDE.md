@@ -371,6 +371,21 @@ deviates from "obvious" and breaks silently if you get it wrong:
   builds the rumor via `SerializeChatRumor`; the receive path
   unwraps via `ExtractChatRumor` and falls back to raw UTF-8 for
   non-rumor payloads.
+- **`MarmotInviteReceived.Sender` is the NIP-59 seal pubkey, NOT
+  guaranteed to be the inviter's identity.** NIP-59 says the seal
+  SHOULD be signed by the sender's identity key, but some Marmot
+  clients (some Whitenoise builds) seal welcomes with non-identity
+  / ephemeral keys. The library verifies the seal signature so the
+  pubkey is cryptographically authentic, but it may be a key the
+  inviter used only for that wrap — multiple welcomes for the same
+  eventual MLS group can surface as different `Sender` values. After
+  accept, `MarmotConversation.Members` is the MLS-bound member list
+  and is the canonical place to identify the counterpart. Don't feed
+  `invite.Sender` into kind-0 author filters; reserve identity-keyed
+  UX for `Members` post-accept. The inbox pump pre-filters welcomes
+  whose target KeyPackage isn't in local storage
+  (`IMarmotMlsProvider.CanJoinWelcomeAsync`), so apps don't see
+  zombie pendings after a state wipe / KP rotation.
 
 ## Test vectors
 

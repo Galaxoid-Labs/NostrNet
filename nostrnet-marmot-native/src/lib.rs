@@ -171,7 +171,7 @@ pub unsafe extern "C" fn marmot_buffer_free(ptr: *mut u8, len: usize) {
 /// mismatched binaries.
 #[unsafe(no_mangle)]
 pub extern "C" fn marmot_abi_version() -> u32 {
-    6
+    7
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -387,6 +387,26 @@ pub unsafe extern "C" fn marmot_join_from_welcome(
             out_exporter_ptr,
             out_exporter_len,
         )
+    }
+}
+
+/// Non-destructively probe whether the provider can join the given
+/// Welcome (i.e., has a stored KeyPackage matching one of its recipient
+/// refs). Writes 1/0 to `*out_can_join`. See `group::welcome_join_state`.
+///
+/// # Safety
+/// Standard FFI safety.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn marmot_welcome_join_state(
+    provider: *mut Provider,
+    welcome_bytes_ptr: *const u8,
+    welcome_bytes_len: usize,
+    out_can_join: *mut u8,
+) -> i32 {
+    errors::clear_last_error();
+    let _g = unsafe { provider::lock_ffi(provider) };
+    unsafe {
+        group::welcome_join_state(provider, welcome_bytes_ptr, welcome_bytes_len, out_can_join)
     }
 }
 

@@ -19,10 +19,31 @@ public abstract record MarmotInboundEvent;
 /// call <see cref="NostrMarmotClient.AcceptInviteAsync"/> to actually
 /// process the Welcome and start receiving group events.
 /// </summary>
-/// <param name="Sender">The Nostr pubkey of the inviter (verified via the seal signature).</param>
+/// <param name="Sender">
+/// The Nostr pubkey on the NIP-59 <em>seal</em> (kind-13) — library-
+/// verified (the seal's signature over the inner rumor checked out and
+/// the outer gift-wrap can't have spoofed it). <strong>This is not
+/// guaranteed to be the inviter's identity pubkey.</strong> NIP-59
+/// says the seal SHOULD be signed by the sender's identity key, but
+/// interop with clients that seal welcomes using non-identity / ephemeral
+/// keys (e.g., some Whitenoise builds) means a single inviter can
+/// surface as multiple distinct <c>Sender</c> values across welcomes for
+/// the same eventual MLS group. After accept, use
+/// <see cref="MarmotConversation.Members"/> to identify the counterpart
+/// — that's the MLS-bound identity. Don't feed <c>Sender</c> into
+/// kind-0 author filters or other identity-keyed UX; reserve those for
+/// post-accept members.
+/// </param>
 /// <param name="KeyPackageEventId">The kind-30443 event id the inviter used to add you.</param>
 /// <param name="RecommendedRelays">Relays the inviter suggests for the conversation.</param>
 /// <param name="OriginalGiftWrap">The raw kind-1059 event — kept for accept-time replay.</param>
+/// <remarks>
+/// The inbox pump filters welcomes whose target KeyPackage has been
+/// rotated away or wiped from the local provider (a stale welcome
+/// where <see cref="NostrMarmotClient.AcceptInviteAsync"/> would just
+/// return null). Apps therefore only see invites the receiver could
+/// actually accept against current local state.
+/// </remarks>
 public sealed record MarmotInviteReceived(
     PublicKey Sender,
     string KeyPackageEventId,

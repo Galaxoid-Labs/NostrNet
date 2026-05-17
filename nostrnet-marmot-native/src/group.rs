@@ -865,6 +865,91 @@ pub unsafe fn join_from_welcome(
     ErrorCode::Success as i32
 }
 
+/// Non-destructively probe whether the provider has any init key that
+/// matches the recipients of the given Welcome. Used by the .NET inbox
+/// pump to filter relay-cached welcomes whose target KeyPackages have
+/// been rotated away or wiped — AcceptInviteAsync would otherwise
+/// return null after a user click, leaving a zombie row in the UI.
+///
+/// Writes the boolean result to `*out_can_join` (1 = at least one
+/// `EncryptedGroupSecrets.new_member` ref resolves to a stored
+/// KeyPackage; 0 = none match, the welcome is stale for this provider).
+/// Returns Success on parse-OK regardless of the outcome; the negative
+/// codes are reserved for actual failures (null pointer, malformed
+/// bytes, storage read error).
+///
+/// # Safety
+/// Standard FFI safety. `welcome_bytes_ptr` must point at
+/// `welcome_bytes_len` bytes of readable memory. `out_can_join` must
+/// point at a writable byte.
+pub unsafe fn welcome_join_state(
+    provider: *mut Provider,
+    welcome_bytes_ptr: *const u8,
+    welcome_bytes_len: usize,
+    out_can_join: *mut u8,
+) -> i32 {
+    use openmls::prelude::OpenMlsProvider as _;
+    use openmls_traits::storage::{CURRENT_VERSION, StorageProvider};
+
+    if provider.is_null() {
+        return fail(ErrorCode::NullArgument, "provider handle is null");
+    }
+    if out_can_join.is_null() {
+        return fail(ErrorCode::NullArgument, "out_can_join pointer is null");
+    }
+    let provider = unsafe { &*provider };
+
+    let welcome_bytes = match unsafe { input_slice(welcome_bytes_ptr, welcome_bytes_len) } {
+        Some(s) => s,
+        None => return fail(ErrorCode::NullArgument, "welcome bytes pointer is null"),
+    };
+
+    let mut cursor = welcome_bytes;
+    let message = match MlsMessageIn::tls_deserialize(&mut cursor) {
+        Ok(m) => m,
+        Err(e) => return fail(
+            ErrorCode::SerializationFailure,
+            format!("deserialize MLSMessage(Welcome) for probe: {e:?}"),
+        ),
+    };
+    let welcome = match message.extract() {
+        MlsMessageBodyIn::Welcome(w) => w,
+        _ => return fail(ErrorCode::InvalidWireFormat, "expected MLSMessage(Welcome)"),
+    };
+
+    // For each EncryptedGroupSecrets, the `new_member` is a KeyPackageRef
+    // (HashReference of the target KeyPackage). Look it up in the
+    // provider's storage; if any returns a stored KP, this provider can
+    // join.
+    let storage = provider.crypto.storage();
+    let mut can_join = false;
+    for secret in welcome.secrets() {
+        let key_ref = secret.new_member();
+        // The trait method returns KeyPackageBundle for our storage —
+        // the private init key is what we need to actually decrypt the
+        // group secrets, and presence of a stored bundle for the ref
+        // is the protocol-correct "this welcome targets me" test.
+        let lookup: Result<Option<KeyPackageBundle>, _> =
+            <_ as StorageProvider<{ CURRENT_VERSION }>>::key_package(storage, &key_ref);
+        match lookup {
+            Ok(Some(_)) => {
+                can_join = true;
+                break;
+            }
+            Ok(None) => continue,
+            Err(e) => return fail(
+                ErrorCode::StorageFailure,
+                format!("storage.key_package lookup during welcome probe: {e:?}"),
+            ),
+        }
+    }
+
+    unsafe {
+        *out_can_join = if can_join { 1 } else { 0 };
+    }
+    ErrorCode::Success as i32
+}
+
 /// Returns the current epoch's Marmot exporter secret for the given group.
 ///
 /// # Safety

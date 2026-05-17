@@ -364,6 +364,39 @@ empty stream.
 | `OpenMlsProvider.StateInfoAsync()` | Returns `MarmotStateInfo(Path, SizeOnDiskBytes, GroupCount)` for diagnostics. |
 | `OpenMlsProvider.WipeStateAsync()` | Disposes the provider and deletes the `.db` + `-shm` + `-wal` sidecars. Throws on in-memory. Standard "sign out / reset" flow. |
 
+### Invite delivery semantics
+
+`MarmotInviteReceived.Sender` is the **NIP-59 seal pubkey** — library-
+verified (the seal signature over the inner rumor passed), but **not
+necessarily the inviter's identity pubkey**. NIP-59 says the seal
+SHOULD be signed by the sender's identity key, but some Marmot
+clients (notably some Whitenoise builds) seal welcomes with
+non-identity keys. After the receiver calls `AcceptInviteAsync`, the
+returned `MarmotConversation.Members` is the MLS-bound member list and
+that's the canonical place to identify the counterpart:
+
+```csharp
+var conv = await marmot.AcceptInviteAsync(invite);
+if (conv is not null)
+{
+    var counterpart = conv.Members.Count == 2
+        ? conv.Members.First(p => !p.Equals(myPub))
+        : conv.Peer;
+    // Hydrate kind-0 profile, render display name, etc. — using
+    // `counterpart`, not `invite.Sender`.
+}
+```
+
+Don't feed `invite.Sender` into kind-0 author filters or identity-
+keyed UX; reserve those for post-accept `Members`.
+
+The inbox pump pre-filters welcomes whose target KeyPackage has been
+rotated away or wiped from local state (`CanJoinWelcomeAsync` checks
+the welcome's `EncryptedGroupSecrets.new_member` refs against the
+provider's stored KeyPackageBundles). Apps therefore don't see
+zombie pending invites that `AcceptInviteAsync` would just null-return
+on.
+
 ### Acceptance semantics
 
 `NostrMarmotClient.AcceptInviteAsync` returns `MarmotConversation?`.
@@ -373,7 +406,10 @@ common in long-lived inboxes:
 - **`NoMatchingKeyPackage`** — the Welcome targets a local
   KeyPackage that has since rotated away (e.g., the state DB was
   wiped between when the inviter cached our KP and when their
-  Welcome was delivered).
+  Welcome was delivered). The inbox-pump pre-filter (above) catches
+  most of these before they surface, but a TOCTOU window exists if
+  the KP is rotated between the pump's probe and the user's accept
+  click — that's the residual null case.
 - **`GroupAlreadyExists`** — the same Welcome was redelivered by a
   second relay; we've already joined the group locally. The library
   scans `ListGroupsAsync` for the inviter and returns the existing

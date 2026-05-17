@@ -112,6 +112,21 @@ public class MarmotChatTests
                 CurrentExporterSecret: secret));
         }
 
+        public Task<bool> CanJoinWelcomeAsync(
+            ReadOnlyMemory<byte> welcomeBytes, CancellationToken ct = default)
+        {
+            // FakeProvider just mirrors what JoinGroupFromWelcomeAsync would
+            // do: extract the embedded kpRef and check if we've published it.
+            // Same predicate, no MLS state change.
+            if (welcomeBytes.Length < 96)
+            {
+                return Task.FromResult(false);
+            }
+
+            byte[] kpRef = welcomeBytes.Slice(64, 32).ToArray();
+            return Task.FromResult(_kpRefToSecret.ContainsKey(Convert.ToHexStringLower(kpRef)));
+        }
+
         public Task<RemoveMembersResult> RemoveMembersAsync(
             ReadOnlyMemory<byte> groupId, IReadOnlyList<PublicKey> peers, CancellationToken ct = default)
             => throw new NotImplementedException();

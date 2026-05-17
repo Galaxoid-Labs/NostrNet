@@ -606,9 +606,20 @@ await foreach (var ev in marmot.SubscribeAsync(ct))
     {
         case MarmotInviteReceived invite:
             var c = await marmot.AcceptInviteAsync(invite);
-            if (c is not null) Console.WriteLine($"joined: {invite.Sender.ToNpub()}");
-            // Returns null on expected-stale failures (rotated KP, dup welcome).
-            // Don't surface those as errors — they're relay-cached noise.
+            if (c is not null)
+            {
+                // For identity-keyed UX (profile lookup, npub display,
+                // kind-0 hydration), use conv.Members — invite.Sender is
+                // the NIP-59 seal pubkey, NOT necessarily the inviter's
+                // identity (see below).
+                var counterpart = c.Members.Count == 2
+                    ? c.Members.First(p => !p.Equals(myPub))
+                    : c.Peer;
+                Render(counterpart, c.Name);
+            }
+            // Returns null on stale rotated-KP edge cases (rare —
+            // the inbox pump pre-filters most of these). Don't
+            // surface as a user-visible error.
             break;
 
         case MarmotMessageReceived msg:
@@ -617,15 +628,31 @@ await foreach (var ev in marmot.SubscribeAsync(ct))
 
         case MarmotGroupStateChanged change:
             // Add / remove / key rotation. Provider state already advanced.
+            // change.Conversation.Members is the post-Commit membership.
             break;
     }
 }
 ```
 
-`MarmotMessageReceived.Sender` is resolved through the **MLS layer**
-(the member that produced the application message), not the
-ephemeral outer signature — so spoofing the outer envelope can't
-change the surfaced sender.
+Two important things about `MarmotInviteReceived.Sender`:
+
+1. **It's the seal pubkey, not necessarily the inviter's identity.**
+   NIP-59 says the seal SHOULD be signed by the sender's identity
+   key, but some Marmot clients (Whitenoise variants) seal welcomes
+   with non-identity keys. The library verifies the seal signature
+   over the inner rumor, so it's *cryptographically authentic* — but
+   it may not be the inviter's stable Nostr npub. Reserve identity-
+   keyed UX (profile lookup, "from <user>" display) for
+   `conv.Members` after accept.
+2. **Stale welcomes are filtered by the inbox pump.** Welcomes whose
+   target KeyPackage has been rotated away or wiped from local state
+   never surface — apps don't see zombie pending invites that
+   `AcceptInviteAsync` would just null-return on.
+
+`MarmotMessageReceived.Sender` is different — it's resolved through
+the **MLS layer** (the member that produced the application message),
+so spoofing the outer envelope can't change the surfaced sender. Safe
+to use as identity.
 
 ### Send
 

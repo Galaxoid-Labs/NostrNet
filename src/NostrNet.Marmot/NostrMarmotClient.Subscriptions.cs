@@ -141,6 +141,35 @@ public sealed partial class NostrMarmotClient
                     continue;
                 }
 
+                // Drop welcomes whose target KeyPackage has been rotated
+                // away or wiped from local storage — AcceptInviteAsync
+                // would just return null on these, but only after a user
+                // click, leaving a zombie row in the UI. The probe is
+                // non-destructive: parses the welcome bytes and checks
+                // each recipient ref against storage, no MLS state
+                // changes.
+                bool canJoin;
+                try
+                {
+                    canJoin = await _provider
+                        .CanJoinWelcomeAsync(welcome.MlsWelcomeBytes, ct)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // If the probe itself fails (malformed welcome,
+                    // storage error), don't suppress — surface the
+                    // invite and let AcceptInviteAsync handle the
+                    // failure path. Better a one-time zombie than
+                    // silently dropping a legitimate invite.
+                    canJoin = true;
+                }
+
+                if (!canJoin)
+                {
+                    continue;
+                }
+
                 var invite = new MarmotInviteReceived(
                     Sender: welcome.Sender,
                     KeyPackageEventId: welcome.KeyPackageEventId,

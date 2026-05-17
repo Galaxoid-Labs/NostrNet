@@ -100,6 +100,27 @@ public interface IMarmotMlsProvider
         CancellationToken ct = default);
 
     /// <summary>
+    /// Non-destructively probe whether <see cref="JoinGroupFromWelcomeAsync"/>
+    /// would find a matching local KeyPackage for the given Welcome bytes.
+    /// Returns <c>true</c> if at least one <c>EncryptedGroupSecrets.new_member</c>
+    /// in the Welcome resolves to a KeyPackage that's still in this
+    /// provider's storage, <c>false</c> if all of them have been rotated
+    /// away (or the local state was wiped). Used by
+    /// <see cref="NostrMarmotClient"/>'s inbox pump to drop stale
+    /// relay-cached welcomes before they surface as
+    /// <see cref="MarmotInviteReceived"/> events.
+    /// </summary>
+    /// <remarks>
+    /// Does NOT modify provider state — the welcome bytes are parsed and
+    /// the recipient refs are checked against storage, but no MLS group
+    /// is created. Apps can call this safely on every inbound kind-1059
+    /// before deciding whether to surface the invite to the user.
+    /// </remarks>
+    Task<bool> CanJoinWelcomeAsync(
+        ReadOnlyMemory<byte> mlsWelcomeBytes,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Issue Remove proposals + Commit for the specified member pubkeys.
     /// Produces a Commit MLSMessage for existing members to process.
     /// Returns the new exporter secret for the post-removal epoch.

@@ -540,6 +540,73 @@ public class NostrMarmotClientTests
         Assert.Equal(3, msg.Conversation.Members.Count);
     }
 
+    [Fact]
+    public async Task StaleWelcome_DroppedSilentlyByInboxPump()
+    {
+        // Real-world scenario: bob's relays still hold a kind-1059 welcome
+        // addressed to a KeyPackage bob has since rotated away (state wipe
+        // + fresh KP). AcceptInviteAsync would return null on a user click;
+        // the pump should never surface it as MarmotInviteReceived in the
+        // first place.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+
+        // Bob #1 — publishes a KP, alice starts a conversation against it,
+        // which publishes the kind-1059 welcome to the relay. Then bob #1
+        // tears down without accepting; the welcome is now relay-cached
+        // but addresses an init key no live provider holds.
+        NostrEvent staleWelcomeEv;
+        {
+            await using var bob1 = await BuildAsync(bobKey, relay);
+            await bob1.PublishKeyPackageAsync();
+            var bobKp1 = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+            await alice.StartConversationAsync(bobKp1!, "stale-welcome");
+
+            staleWelcomeEv = relay.AllPublished.Single(e => e.Kind == 1059);
+            // bob1's provider disposes here; its init keys are gone.
+        }
+
+        // Bob #2 — fresh provider (no init keys for the old welcome),
+        // taps the inbound stream. The relay-cached welcome should be
+        // filtered out by the pump's CanJoinWelcomeAsync check.
+        await using var bob2 = await BuildAsync(bobKey, relay);
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+        var bob2Inbound = bob2.SubscribeAsync(streamCts.Token);
+
+        var leak = await TryNextOfTypeAsync<MarmotInviteReceived>(bob2Inbound, streamCts.Token);
+        Assert.Null(leak);
+        // Sanity: the stale event IS in the relay's backlog and IS addressed
+        // to bob's pubkey — the filter is what kept it out of the stream.
+        Assert.NotNull(staleWelcomeEv);
+    }
+
+    [Fact]
+    public async Task FreshWelcome_PassesInboxPumpFilter()
+    {
+        // The other half of the stale-welcome contract: a welcome whose
+        // target KeyPackage IS in storage must surface normally.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        await alice.StartConversationAsync(bobKp!, "fresh-welcome");
+
+        // Should arrive; filter is a no-op when the KP is still ours.
+        var invite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        Assert.Equal(aliceKey.PublicKey, invite.Sender);
+    }
+
     // Tests opt out of auto-publish + rotate-after-accept so they can
     // assert deterministic KeyPackage IDs and inbound-event counts.
     // The auto-rotation behavior has its own dedicated test below.

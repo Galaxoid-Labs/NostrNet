@@ -45,6 +45,9 @@ internal static partial class NativeBindings
     [LibraryImport(Library, EntryPoint = "marmot_last_error_code")]
     public static partial int LastErrorCode();
 
+    [LibraryImport(Library, EntryPoint = "marmot_welcome_join_state")]
+    public static unsafe partial int WelcomeJoinState(IntPtr provider, byte* welcomePtr, nuint welcomeLen, out byte outCanJoin);
+
     [LibraryImport(Library, EntryPoint = "marmot_abi_version")]
     public static partial uint AbiVersion();
 
