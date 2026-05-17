@@ -107,6 +107,13 @@ public sealed partial class NostrMarmotClient
             },
         };
 
+        // Multi-relay setups deliver the same kind-1059 event once per relay
+        // carrying it. Dedup at the outer event-id level so we yield one
+        // MarmotInviteReceived per unique welcome, not N. Local to the pump
+        // (single-reader, no concurrency concerns) and cleared when the
+        // pump exits.
+        var seen = new HashSet<EventId>();
+
         try
         {
             await foreach (var ev in _relay.SubscribeAsync(new[] { filter }, ct).ConfigureAwait(false))
@@ -117,6 +124,11 @@ public sealed partial class NostrMarmotClient
                 }
 
                 if (ev.Kind != 1059)
+                {
+                    continue;
+                }
+
+                if (!seen.Add(ev.Id))
                 {
                     continue;
                 }
@@ -189,6 +201,14 @@ public sealed partial class NostrMarmotClient
             },
         };
 
+        // Per-group dedup: same kind-445 event delivered by N relays must
+        // yield one MarmotMessageReceived (or MarmotGroupStateChanged for a
+        // Commit), not N. Local to this pump task. MLS itself replay-rejects
+        // duplicate application messages once the ratchet advances, so the
+        // primary breakage without this set is duplicate state-change events
+        // for Commits and (in some edge cases) a confused user-facing log.
+        var seen = new HashSet<EventId>();
+
         try
         {
             await foreach (var ev in _relay.SubscribeAsync(new[] { filter }, ct).ConfigureAwait(false))
@@ -205,6 +225,11 @@ public sealed partial class NostrMarmotClient
 
                 // Sanity-check h-tag; a misbehaving relay might send unrelated events.
                 if (!MarmotChat.LooksLikeGroupEventFor(conversation, ev))
+                {
+                    continue;
+                }
+
+                if (!seen.Add(ev.Id))
                 {
                     continue;
                 }

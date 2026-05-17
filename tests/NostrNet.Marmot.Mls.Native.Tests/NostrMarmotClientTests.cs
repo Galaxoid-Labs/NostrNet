@@ -276,6 +276,126 @@ public class NostrMarmotClientTests
         Assert.False(more);
     }
 
+    [Fact]
+    public async Task SubscribeAsync_DedupsWelcomesByEventId()
+    {
+        // Multi-relay setups deliver the same kind-1059 welcome event once
+        // per relay carrying it. The pump must yield one MarmotInviteReceived
+        // per unique outer event id, not N. Simulate by re-publishing the
+        // same wire event a second time.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        await alice.StartConversationAsync(bobKp!, "dedup");
+
+        // First invite is the legitimate delivery.
+        var first = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+
+        // Grab the just-published welcome wire event and re-publish it
+        // (simulating a second relay delivering the same event id).
+        var welcomeWire = relay.AllPublished.Single(e => e.Id.Equals(first.OriginalGiftWrap.Id));
+        await relay.PublishAsync(welcomeWire);
+
+        // Nothing more should arrive — the pump's dedup set drops the
+        // second delivery before unwrap.
+        using var idle = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var leak = await TryNextOfTypeAsync<MarmotInviteReceived>(bobInbound, idle.Token);
+        Assert.Null(leak);
+    }
+
+    [Fact]
+    public async Task SubscribeAsync_DedupsApplicationMessagesByEventId()
+    {
+        // Same fix applies to kind-445 application messages — N relay
+        // copies of the same wire event must yield one MarmotMessageReceived.
+        // (MLS itself replay-rejects the second-decrypt on its ratchet, but
+        // we want the pump to skip it cleanly before reaching the MLS layer.)
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "dedup-msg");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "hello");
+        var first = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        // Re-publish the same kind-445 wire event.
+        var groupEvWire = relay.AllPublished.Single(e => e.Id.Equals(first.EventId));
+        await relay.PublishAsync(groupEvWire);
+
+        using var idle = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var leak = await TryNextOfTypeAsync<MarmotMessageReceived>(bobInbound, idle.Token);
+        Assert.Null(leak);
+    }
+
+    [Fact]
+    public async Task SubscribeAsync_DedupsCommitsByEventId()
+    {
+        // Commits (MarmotGroupStateChanged) ride on kind-445 too, and have
+        // the same multi-relay duplicate-delivery shape. App handlers are
+        // usually idempotent, but firing one state-change per Commit is the
+        // correct contract.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        using var charlieKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+        await using var charlie = await BuildAsync(charlieKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        await charlie.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var charlieKp = await alice.TryGetKeyPackageAsync(charlieKey.PublicKey, TimeSpan.FromSeconds(2));
+
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "dedup-commit");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        // Adding charlie fires a Commit kind-445 that bob processes as a
+        // state change.
+        await alice.AddPeerAsync(aliceConvo, charlieKp!);
+        var first = await NextOfTypeAsync<MarmotGroupStateChanged>(bobInbound);
+
+        // Find the kind-445 Commit (the only one published so far for this
+        // group) and re-publish it.
+        var groupIdHex = Convert.ToHexStringLower(aliceConvo.NostrGroupId);
+        var commitWire = relay.AllPublished
+            .Where(e => e.Kind == MarmotKinds.GroupEvent)
+            .Single(e => e.Tags.Any(t => t.Count >= 2 && t[0] == "h" && t[1] == groupIdHex));
+        await relay.PublishAsync(commitWire);
+
+        using var idle = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var leak = await TryNextOfTypeAsync<MarmotGroupStateChanged>(bobInbound, idle.Token);
+        Assert.Null(leak);
+
+        // Sanity check on first: it's the right state change.
+        Assert.Equal(aliceKey.PublicKey, first.Sender);
+    }
+
     // Tests opt out of auto-publish + rotate-after-accept so they can
     // assert deterministic KeyPackage IDs and inbound-event counts.
     // The auto-rotation behavior has its own dedicated test below.
