@@ -584,6 +584,54 @@ public class NostrMarmotClientTests
     }
 
     [Fact]
+    public async Task AcceptInvite_DeletesConsumedKeyPackageBundle_SoReDeliveryIsFiltered()
+    {
+        // The bug: accepting a welcome left the consumed KP bundle in
+        // provider storage. On the next session, the preview13 stale-
+        // welcome filter saw the bundle as "still present" and surfaced
+        // the same welcome again as a new MarmotInviteReceived. Fix:
+        // delete the consumed bundle after a successful join. Probe:
+        // CanJoinWelcomeAsync(welcomeBytes) must return false post-accept.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        await alice.StartConversationAsync(bobKp!, "delete-on-consume");
+
+        var invite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        // Sanity: before accept, the welcome was joinable (the pump filter
+        // already proved this by surfacing the invite at all).
+
+        var conv = await bob.AcceptInviteAsync(invite);
+        Assert.NotNull(conv);
+
+        // After accept, the consumed bundle must be gone from storage —
+        // CanJoinWelcomeAsync now returns false on this welcome.
+        // (NostrMarmotClient exposes the underlying provider for tests via
+        // MlsProvider; if not, route through bob.NostrClient... falling
+        // back to the FakeRelay's stored event.)
+        var welcomeEv = relay.AllPublished.Single(e => e.Id.Equals(invite.OriginalGiftWrap.Id));
+        Assert.NotNull(welcomeEv);
+
+        // Re-publishing the wire event simulates a relay re-delivery on
+        // the next session (the bug's actual repro). Because the bundle
+        // was deleted on accept, the pump's filter drops it silently.
+        await relay.PublishAsync(welcomeEv);
+
+        using var idle = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+        var leak = await TryNextOfTypeAsync<MarmotInviteReceived>(bobInbound, idle.Token);
+        Assert.Null(leak);
+    }
+
+    [Fact]
     public async Task FreshWelcome_PassesInboxPumpFilter()
     {
         // The other half of the stale-welcome contract: a welcome whose

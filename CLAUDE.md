@@ -386,6 +386,17 @@ deviates from "obvious" and breaks silently if you get it wrong:
   whose target KeyPackage isn't in local storage
   (`IMarmotMlsProvider.CanJoinWelcomeAsync`), so apps don't see
   zombie pendings after a state wipe / KP rotation.
+- **Consumed KeyPackage bundles are deleted from storage on
+  successful join** inside `marmot_join_from_welcome` (Rust side,
+  after `StagedWelcome::into_group` succeeds). MLS spec says init
+  keys are single-use; openmls doesn't auto-prune through its
+  storage trait, so we explicitly call
+  `StorageProvider::delete_key_package` for every recipient
+  KeyPackageRef the welcome contained. This makes the stale-welcome
+  filter above catch relay-cached re-deliveries of the just-consumed
+  welcome on the next session — without the delete, the bundle
+  stays in storage, the probe says "joinable," and the ghost invite
+  resurfaces every restart.
 
 ## Test vectors
 

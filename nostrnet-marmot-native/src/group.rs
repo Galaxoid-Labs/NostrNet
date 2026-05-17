@@ -804,6 +804,16 @@ pub unsafe fn join_from_welcome(
         _ => return fail(ErrorCode::InvalidWireFormat, "expected MLSMessage(Welcome)"),
     };
 
+    // Capture the welcome's recipient KeyPackageRefs BEFORE the welcome
+    // is moved into StagedWelcome — we'll need them after the join to
+    // delete the consumed bundle from storage (MLS init keys are
+    // single-use; without this, the preview13 stale-welcome filter
+    // can't tell that the bundle was already consumed and re-deliveries
+    // of the same welcome resurface as MarmotInviteReceived on every
+    // session restart).
+    let recipient_refs: Vec<openmls::prelude::KeyPackageRef> =
+        welcome.secrets().iter().map(|s| s.new_member()).collect();
+
     let join_config = MlsGroupJoinConfig::builder()
         .use_ratchet_tree_extension(true)
         .build();
@@ -822,6 +832,23 @@ pub unsafe fn join_from_welcome(
         Ok(g) => g,
         Err(e) => return fail(ErrorCode::OpenMlsFailure, format!("StagedWelcome::into_group: {e:?}")),
     };
+
+    // Delete the consumed KeyPackageBundles from storage. Per MLS spec
+    // init keys are single-use; once we've joined a group with a given
+    // bundle, that bundle MUST NOT decrypt a second welcome. openmls
+    // doesn't auto-prune through this storage trait, so we do it
+    // explicitly. Only the bundle whose ref matched our storage is
+    // present; delete_key_package on the others is a no-op. Errors are
+    // best-effort — the join already succeeded and the worst case is a
+    // stale welcome resurfaces (which is the exact bug we're fixing).
+    {
+        use openmls_traits::storage::{CURRENT_VERSION, StorageProvider};
+        let storage = openmls::prelude::OpenMlsProvider::storage(&provider.crypto);
+        for key_ref in &recipient_refs {
+            let _: Result<(), _> =
+                <_ as StorageProvider<{ CURRENT_VERSION }>>::delete_key_package(storage, key_ref);
+        }
+    }
 
     // The joiner's signature keys were already persisted when their
     // KeyPackage was built. The MlsGroup state has been written to

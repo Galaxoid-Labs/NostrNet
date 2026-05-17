@@ -434,6 +434,12 @@ cadence (no background timers, no scheduler infrastructure):
   peer just consumed gets replaced. Anyone caching it on a relay
   receives the fresh one on next fetch; the old init key never
   serves a second inviter.
+- **`AcceptInviteAsync` also prunes the consumed `KeyPackageBundle`
+  from local provider storage**, per MLS's single-use init-key
+  contract. This is what makes the preview13 inbox-pump stale-welcome
+  filter catch relay-cached re-deliveries of the just-consumed welcome
+  on a future session: the bundle is gone, the probe returns false,
+  the ghost invite never resurfaces in the UI.
 
 Failures are best-effort — a relay hiccup at startup or after a
 join doesn't break the active session. The most recent error (if
