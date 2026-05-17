@@ -396,6 +396,150 @@ public class NostrMarmotClientTests
         Assert.Equal(aliceKey.PublicKey, first.Sender);
     }
 
+    [Fact]
+    public async Task Members_PopulatedAtAllConstructionSites()
+    {
+        // Verify the Members invariant holds across StartConversationAsync,
+        // StartGroupAsync (N=2 + N=3), AcceptInviteAsync, and after
+        // LoadExistingConversationsAsync rehydration.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        using var charlieKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+        await using var charlie = await BuildAsync(charlieKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        await charlie.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var charlieKp = await alice.TryGetKeyPackageAsync(charlieKey.PublicKey, TimeSpan.FromSeconds(2));
+
+        // 1:1 via StartConversationAsync — Members has both keys, Peer set, IsGroup false.
+        var oneToOne = await alice.StartConversationAsync(bobKp!, "1:1");
+        Assert.Equal(2, oneToOne.Members.Count);
+        Assert.Contains(oneToOne.Members, p => p.Equals(aliceKey.PublicKey));
+        Assert.Contains(oneToOne.Members, p => p.Equals(bobKey.PublicKey));
+        Assert.False(oneToOne.IsGroup);
+
+        // Bob accepts — his side carries the same 2-member list.
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        var bobConvo = await bob.AcceptInviteAsync(bobInvite);
+        Assert.NotNull(bobConvo);
+        Assert.Equal(2, bobConvo!.Members.Count);
+        Assert.Contains(bobConvo.Members, p => p.Equals(aliceKey.PublicKey));
+        Assert.Contains(bobConvo.Members, p => p.Equals(bobKey.PublicKey));
+    }
+
+    [Fact]
+    public async Task Members_PopulatedAfterStartGroupAsync()
+    {
+        // StartGroupAsync with multiple peers — Members reflects all
+        // initial members (including self), Peer is null for N>1.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        using var charlieKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+        await using var charlie = await BuildAsync(charlieKey, relay);
+
+        await bob.PublishKeyPackageAsync();
+        await charlie.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var charlieKp = await alice.TryGetKeyPackageAsync(charlieKey.PublicKey, TimeSpan.FromSeconds(2));
+
+        var group = await alice.StartGroupAsync(new[] { bobKp!, charlieKp! }, "Trio");
+        Assert.Equal(3, group.Members.Count);
+        Assert.Contains(group.Members, p => p.Equals(aliceKey.PublicKey));
+        Assert.Contains(group.Members, p => p.Equals(bobKey.PublicKey));
+        Assert.Contains(group.Members, p => p.Equals(charlieKey.PublicKey));
+        Assert.True(group.IsGroup);
+        Assert.Null(group.Peer);
+    }
+
+    [Fact]
+    public async Task MarmotGroupStateChanged_CarriesRefreshedMembers()
+    {
+        // When an admin adds a member, MarmotGroupStateChanged.Conversation
+        // should reflect the post-Commit membership — not the snapshot the
+        // pump captured at conversation-start time.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        using var charlieKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+        await using var charlie = await BuildAsync(charlieKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        await charlie.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var charlieKp = await alice.TryGetKeyPackageAsync(charlieKey.PublicKey, TimeSpan.FromSeconds(2));
+
+        // Start as 1:1 alice + bob, accept on bob's side.
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "growing");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        var bobConvo = await bob.AcceptInviteAsync(bobInvite);
+        Assert.Equal(2, bobConvo!.Members.Count);
+
+        // Alice adds Charlie. Bob processes the Commit.
+        await alice.AddPeerAsync(aliceConvo, charlieKp!);
+        var stateChange = await NextOfTypeAsync<MarmotGroupStateChanged>(bobInbound);
+
+        // The state-change event's Conversation should now have 3 members.
+        Assert.Equal(3, stateChange.Conversation.Members.Count);
+        Assert.Contains(stateChange.Conversation.Members, p => p.Equals(charlieKey.PublicKey));
+    }
+
+    [Fact]
+    public async Task Members_RefreshedAfterCommit_ReflectedInSubsequentMessageReceived()
+    {
+        // After a Commit refreshes membership, the next MarmotMessageReceived
+        // for this group should carry the post-Commit member list too —
+        // not just the state-change event.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        using var charlieKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+        await using var charlie = await BuildAsync(charlieKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        await charlie.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var charlieKp = await alice.TryGetKeyPackageAsync(charlieKey.PublicKey, TimeSpan.FromSeconds(2));
+
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "growing-msg");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        // Add charlie → state-change fires.
+        await alice.AddPeerAsync(aliceConvo, charlieKp!);
+        _ = await NextOfTypeAsync<MarmotGroupStateChanged>(bobInbound);
+
+        // Alice sends a message in the post-add epoch. Bob's
+        // MarmotMessageReceived.Conversation should have all 3 members.
+        await alice.SendAsync(aliceConvo, "now we are three");
+        var msg = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+        Assert.Equal("now we are three", msg.Plaintext);
+        Assert.Equal(3, msg.Conversation.Members.Count);
+    }
+
     // Tests opt out of auto-publish + rotate-after-accept so they can
     // assert deterministic KeyPackage IDs and inbound-event counts.
     // The auto-rotation behavior has its own dedicated test below.

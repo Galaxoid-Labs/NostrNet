@@ -37,9 +37,32 @@ using SysEncoding = System.Text.Encoding;
 
 namespace NostrNet.Marmot;
 
-/// <summary>A live Marmot conversation handle.</summary>
+/// <summary>
+/// A live Marmot conversation handle. <strong>Every Marmot conversation
+/// is structurally an MLS group with N members</strong> (N ≥ 2 for any
+/// usable chat) — there's no separate "1:1" wire shape. The
+/// <see cref="Peer"/> convenience is only set when the conversation was
+/// created explicitly via <see cref="MarmotChat.StartConversationAsync"/>
+/// (the dedicated 1:1 entry point); groups created via
+/// <see cref="MarmotChat.StartGroupAsync"/>, including 2-member ones,
+/// leave <see cref="Peer"/> null. Apps wanting to render "2-member
+/// group looks like a 1:1" should derive the counterpart from
+/// <see cref="Members"/>:
+/// <code>
+/// var counterpart = conv.Members.Count == 2
+///     ? conv.Members.First(p =&gt; !p.Equals(mySelf))
+///     : conv.Peer;
+/// </code>
+/// </summary>
 /// <param name="NostrGroupId">The 32-byte group id used in <c>h</c> tags on kind-445 events.</param>
-/// <param name="Peer">For 1:1 conversations the other party's pubkey. <c>null</c> for multi-member groups, or for conversations rehydrated from storage where the peer isn't unambiguous.</param>
+/// <param name="Peer">
+/// Convenience for 1:1 conversations created via
+/// <see cref="MarmotChat.StartConversationAsync"/> — the other party's
+/// pubkey. <c>null</c> for groups (including 2-member groups created via
+/// <see cref="MarmotChat.StartGroupAsync"/>), and for conversations
+/// rehydrated from storage where N &gt; 2. Prefer <see cref="Members"/>
+/// for interop-correct identification.
+/// </param>
 public sealed record MarmotConversation(byte[] NostrGroupId, PublicKey? Peer)
 {
     /// <summary>
@@ -57,9 +80,26 @@ public sealed record MarmotConversation(byte[] NostrGroupId, PublicKey? Peer)
     public string? Description { get; init; }
 
     /// <summary>
+    /// All current members of the underlying MLS group, including this
+    /// client's own identity. Populated at every construction site
+    /// (StartConversationAsync, StartGroupAsync, AcceptInviteAsync,
+    /// LoadExistingConversationsAsync) and refreshed on every
+    /// <see cref="MarmotGroupStateChanged"/> after a Commit advances the
+    /// epoch. For protocol-correct interop (e.g., distinguishing a
+    /// 2-member group from a multi-member one regardless of which entry
+    /// point the sender chose), prefer <c>Members.Count == 2</c> over
+    /// <see cref="IsGroup"/>.
+    /// </summary>
+    public IReadOnlyList<PublicKey> Members { get; init; } = Array.Empty<PublicKey>();
+
+    /// <summary>
     /// <c>true</c> when this is a multi-member group (or a 1:1 where the
     /// peer couldn't be derived). Equivalent to <c>Peer is null</c> but
-    /// reads more cleanly in call sites.
+    /// reads more cleanly in call sites. <strong>Note:</strong> a
+    /// 2-member group created via <see cref="MarmotChat.StartGroupAsync"/>
+    /// surfaces as <c>IsGroup == true</c> because the sender opted into
+    /// the group entry point — apps that want "2-member groups look
+    /// like 1:1" should use <see cref="Members"/> instead.
     /// </summary>
     public bool IsGroup => Peer is null;
 }
@@ -325,6 +365,7 @@ public static class MarmotChat
             {
                 Name = groupData.Name,
                 Description = groupData.Description,
+                Members = new[] { myKey.PublicKey, peerKp.Author },
             },
             WelcomeGiftWrap: giftWrap);
     }
@@ -356,12 +397,36 @@ public static class MarmotChat
             var joined = await provider.JoinGroupFromWelcomeAsync(
                 welcome.MlsWelcomeBytes, ct).ConfigureAwait(false);
 
+            // Pull the freshly-joined group's member list out of provider
+            // storage so MarmotConversation.Members is populated. This is
+            // one cheap FFI call per accept; without it apps can't tell a
+            // 2-member group apart from a multi-member one when the
+            // sender used StartGroupAsync (Whitenoise interop case).
+            IReadOnlyList<PublicKey> members = Array.Empty<PublicKey>();
+            try
+            {
+                var stored = await provider.ListGroupsAsync(ct).ConfigureAwait(false);
+                var match = stored.FirstOrDefault(g =>
+                    g.NostrGroupId.AsSpan().SequenceEqual(joined.NostrGroupId));
+                if (match is not null)
+                {
+                    members = match.Members;
+                }
+            }
+            catch
+            {
+                // ListGroupsAsync should not realistically fail right
+                // after a successful join, but if it does, fall back to
+                // an empty member list rather than failing the accept.
+            }
+
             return new MarmotConversation(
                 NostrGroupId: joined.NostrGroupId,
                 Peer: welcome.Sender)
             {
                 Name = joined.GroupData.Name,
                 Description = joined.GroupData.Description,
+                Members = members,
             };
         }
         catch (System.Security.Cryptography.CryptographicException)
@@ -434,6 +499,7 @@ public static class MarmotChat
                     {
                         Name = g.GroupData?.Name,
                         Description = g.GroupData?.Description,
+                        Members = g.Members,
                     };
                 }
             }
@@ -777,11 +843,20 @@ public static class MarmotChat
         // list, which is functionally identical to StartConversationAsync)
         // we keep the peer set so app code can render the 1:1 peer chip.
         PublicKey? handlePeer = peerKps.Length == 1 ? peerKps[0].Author : null;
+
+        var members = new PublicKey[peerKps.Length + 1];
+        members[0] = myKey.PublicKey;
+        for (int i = 0; i < peerKps.Length; i++)
+        {
+            members[i + 1] = peerKps[i].Author;
+        }
+
         return new MarmotGroupStarted(
             Conversation: new MarmotConversation(groupId, handlePeer)
             {
                 Name = groupData.Name,
                 Description = groupData.Description,
+                Members = members,
             },
             WelcomeGiftWraps: giftWraps);
     }

@@ -235,13 +235,41 @@ await foreach (var ev in client.SubscribeAsync(ct)) { /* ... */ }
 `MarmotConversation` carries:
 
 - `NostrGroupId` — 32-byte group id used as the `h` tag on kind-445 events.
-- `Peer` — nullable. For 1:1 conversations, the other party's pubkey.
-  For multi-member groups and rehydrated conversations where the 1:1 peer
-  is ambiguous, `null`. `IsGroup` is the equivalent convenience.
+- `Members` — every current member of the MLS group, **including your own
+  identity**. Refreshed automatically on every Commit (add / remove / key
+  rotation) so the value on a freshly-yielded `MarmotGroupStateChanged`
+  reflects the post-Commit membership. Use this for interop-correct
+  "is this effectively a 1:1?" detection (see below).
+- `Peer` — convenience for 1:1 conversations created via
+  `StartConversationAsync`. **Not set by `StartGroupAsync`, even at N=2**
+  — that's a meaningful gotcha when interoperating with other Marmot
+  clients (Whitenoise always uses `StartGroupAsync`). Apps that want
+  "2-member groups render as 1:1" should derive the counterpart from
+  `Members`, not `Peer`:
+
+  ```csharp
+  var counterpart = conv.Members.Count == 2
+      ? conv.Members.First(p => !p.Equals(myPub))
+      : conv.Peer;
+
+  if (counterpart is not null) RenderAsDirectChat(counterpart);
+  else                          RenderAsGroup(conv.Name, conv.Members);
+  ```
+
+- `IsGroup` — equivalent to `Peer is null`. Convenient but **not
+  protocol-correct** for the 2-member-group-vs-1:1 distinction; see
+  `Members.Count` for that.
 - `Name` / `Description` — lifted from the MIP-01 NostrGroupData
   extension. Populated whenever the extension is present on the
   underlying MLS group. Empty string is permitted by the spec for
   "unnamed groups" — render empty the same as null.
+
+Every Marmot conversation is structurally an MLS group with N members
+(N ≥ 2 for any usable chat). "1:1" is a UI affordance for N=2 — there's
+no separate wire shape. The sender chooses between
+`StartConversationAsync` (sets `Peer`) and `StartGroupAsync` (doesn't);
+receivers should make rendering decisions from `Members.Count`, not from
+which entry point the sender happened to choose.
 
 ### Cold-start chat history (`IMarmotMessageLog`)
 

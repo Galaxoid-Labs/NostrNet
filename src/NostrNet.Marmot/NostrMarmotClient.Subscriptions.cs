@@ -234,14 +234,37 @@ public sealed partial class NostrMarmotClient
                     continue;
                 }
 
-                bool epochAdvanced = await ProcessOneAsync(conversation, ev, ct).ConfigureAwait(false);
+                // Use the latest tracked snapshot for this group so
+                // MarmotConversation.Members reflects updates from any
+                // prior Commit. The pump's captured `conversation`
+                // parameter is the initial snapshot at pump start;
+                // _conversations may have been replaced by a Commit
+                // refresh since.
+                MarmotConversation currentConv;
+                lock (_subLock)
+                {
+                    currentConv = _conversations.TryGetValue(groupIdHex, out var tracked)
+                        ? tracked
+                        : conversation;
+                }
+
+                bool epochAdvanced = await ProcessOneAsync(currentConv, ev, ct).ConfigureAwait(false);
                 if (epochAdvanced)
                 {
+                    // Re-read in case ProcessOneAsync replaced the
+                    // tracked entry with a member-refreshed copy.
+                    lock (_subLock)
+                    {
+                        currentConv = _conversations.TryGetValue(groupIdHex, out var tracked)
+                            ? tracked
+                            : currentConv;
+                    }
+
                     // The receiver just moved to a new epoch — replay
                     // every previously-undecryptable event for this
                     // group, in created_at order so any chain of
                     // commits + app messages walks forward correctly.
-                    await ReplayParkedAsync(conversation, groupIdHex, ct).ConfigureAwait(false);
+                    await ReplayParkedAsync(currentConv, groupIdHex, ct).ConfigureAwait(false);
                 }
             }
         }
@@ -278,16 +301,37 @@ public sealed partial class NostrMarmotClient
             return false;
         }
 
+        // On a Commit that advances the epoch, the group's member list
+        // may have changed (add/remove/SelfRemove). Refresh the
+        // conversation handle so MarmotGroupStateChanged.Conversation
+        // carries the post-Commit Members, and update the tracked
+        // snapshot so subsequent MarmotMessageReceived also see fresh
+        // membership.
+        MarmotConversation convForEvent = conversation;
+        if (processed.Kind == MarmotMessageKind.Commit && processed.EpochAdvanced)
+        {
+            var refreshed = await TryRefreshConversationAsync(conversation, ct).ConfigureAwait(false);
+            if (refreshed is not null)
+            {
+                convForEvent = refreshed;
+                string groupIdHex = Convert.ToHexStringLower(conversation.NostrGroupId);
+                lock (_subLock)
+                {
+                    _conversations[groupIdHex] = refreshed;
+                }
+            }
+        }
+
         MarmotInboundEvent? typed = processed.Kind switch
         {
             MarmotMessageKind.Application => new MarmotMessageReceived(
-                Conversation: conversation,
+                Conversation: convForEvent,
                 EventId: ev.Id,
                 Sender: processed.Sender,
                 Plaintext: processed.Plaintext ?? string.Empty,
                 ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt)),
             MarmotMessageKind.Commit => new MarmotGroupStateChanged(
-                Conversation: conversation,
+                Conversation: convForEvent,
                 Sender: processed.Sender),
             _ => null,
         };
@@ -321,6 +365,43 @@ public sealed partial class NostrMarmotClient
         }
 
         return processed.EpochAdvanced;
+    }
+
+    /// <summary>
+    /// After a Commit advances the epoch, re-query the provider for the
+    /// group's current member list and return a refreshed conversation
+    /// handle. Preserves the original Peer (which is a "how was this
+    /// conversation originally created" hint, not a per-epoch property)
+    /// and re-reads Name/Description from the stored extension in case
+    /// an admin renamed the group as part of the same Commit.
+    /// </summary>
+    private async Task<MarmotConversation?> TryRefreshConversationAsync(
+        MarmotConversation current,
+        CancellationToken ct)
+    {
+        IReadOnlyList<MarmotStoredGroup> stored;
+        try
+        {
+            stored = await _provider.ListGroupsAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
+
+        var match = stored.FirstOrDefault(g =>
+            g.NostrGroupId.AsSpan().SequenceEqual(current.NostrGroupId));
+        if (match is null)
+        {
+            return null;
+        }
+
+        return new MarmotConversation(current.NostrGroupId, current.Peer)
+        {
+            Name = match.GroupData?.Name ?? current.Name,
+            Description = match.GroupData?.Description ?? current.Description,
+            Members = match.Members,
+        };
     }
 
     private void ParkEvent(byte[] groupId, NostrEvent ev)

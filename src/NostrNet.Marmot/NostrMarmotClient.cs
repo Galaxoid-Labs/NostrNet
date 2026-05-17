@@ -360,6 +360,7 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
             {
                 Name = g.GroupData?.Name,
                 Description = g.GroupData?.Description,
+                Members = g.Members,
             };
             TrackConversation(convo);
             conversations.Add(convo);

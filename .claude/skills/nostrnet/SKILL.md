@@ -669,10 +669,28 @@ _ = Task.Run(async () =>
 });
 ```
 
-`MarmotConversation` carries `NostrGroupId`, `Peer` (nullable for groups),
-plus `Name` / `Description` / `IsGroup` lifted from the MIP-01
-NostrGroupData extension. `Peer == null` is equivalent to `IsGroup`;
-use whichever reads better in the call site.
+`MarmotConversation` carries `NostrGroupId`, `Peer` (nullable),
+`Members` (all current MLS members including self), `Name`,
+`Description`, and `IsGroup`. Every Marmot conversation is structurally
+an MLS group with N members — "1:1" is a UI affordance for N=2, not a
+wire-level distinction. **`Peer` is only set when the sender used
+`StartConversationAsync`**; groups created via `StartGroupAsync`
+(including 2-member ones, the Whitenoise interop case) leave `Peer`
+null. For protocol-correct "this is effectively a 1:1" detection use
+`Members.Count == 2` rather than `IsGroup`:
+
+```csharp
+var counterpart = conv.Members.Count == 2
+    ? conv.Members.First(p => !p.Equals(myPub))
+    : conv.Peer;
+
+if (counterpart is not null) RenderAsDirectChat(counterpart);
+else                          RenderAsGroup(conv.Name, conv.Members);
+```
+
+`Members` is refreshed automatically on every Commit, so the value on
+a `MarmotGroupStateChanged` event reflects the post-add/remove/rotate
+membership.
 
 ### Cold-start history (`IMarmotMessageLog`)
 
@@ -887,9 +905,11 @@ alphabet) rather than running forever.
 - **Marmot Commit ordering.** If a Commit and an app message from the
   new epoch arrive out of order, the app message decrypts as null on
   `MarmotMessageReceived` until the Commit lands. Park-and-retry.
-- **`MarmotConversation.Peer` is nullable.** Multi-member groups and
-  rehydrated conversations leave it null; don't deref it
-  unconditionally.
+- **`MarmotConversation.Peer` is a sender-hint, not a member count.**
+  Set only when the sender used `StartConversationAsync`; null for
+  anything created via `StartGroupAsync` (Whitenoise interop is the
+  common case). Use `Members.Count == 2` to detect "effectively a 1:1"
+  regardless of which entry point the sender picked.
 - **State-DB lifecycle.** `OpenMlsProvider.OpenAtPath(path, rawKey)`
   opens a **SQLCipher-encrypted** SQLite db; the 32-byte raw key is
   supplied by the caller (derive via HKDF over an nsec or passphrase).
