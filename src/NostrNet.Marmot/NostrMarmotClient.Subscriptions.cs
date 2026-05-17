@@ -433,6 +433,56 @@ public sealed partial class NostrMarmotClient
         };
     }
 
+    /// <summary>
+    /// Surfaces a <see cref="MarmotGroupStateChanged"/> for a Commit
+    /// this client just published (AddPeer / RemovePeers / RotateKeys).
+    /// The sender's own Commit kind-445 round-trips through their
+    /// GroupPumpAsync but fails to decrypt — the MLS layer has already
+    /// advanced the sender past the pre-Commit epoch the receive-side
+    /// processor would need to re-enter. Without this manual emit the
+    /// initiator's UI never sees the state-change event for actions
+    /// they themselves performed; peers see it normally.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors the receive path's epoch-advanced refresh so
+    /// <c>_conversations[groupIdHex]</c> and the emitted event's
+    /// <c>Conversation.Members</c> reflect the post-Commit member set.
+    /// No <see cref="IMarmotMessageLog"/> append — state changes
+    /// aren't chat messages and the receive path doesn't log them
+    /// either.
+    /// </remarks>
+    private async Task EmitOwnGroupStateChangeAsync(
+        MarmotConversation conversation,
+        CancellationToken ct)
+    {
+        if (_inboundChannel is null)
+        {
+            return;
+        }
+
+        var refreshed = await TryRefreshConversationAsync(conversation, ct).ConfigureAwait(false)
+                        ?? conversation;
+
+        string groupIdHex = Convert.ToHexStringLower(conversation.NostrGroupId);
+        lock (_subLock)
+        {
+            _conversations[groupIdHex] = refreshed;
+        }
+
+        var change = new MarmotGroupStateChanged(
+            Conversation: refreshed,
+            Sender: _identityKey.PublicKey);
+
+        try
+        {
+            await _inboundChannel.Writer.WriteAsync(change, ct).ConfigureAwait(false);
+        }
+        catch (System.Threading.Channels.ChannelClosedException)
+        {
+            // Disposal raced with this publish; nothing to do.
+        }
+    }
+
     private void ParkEvent(byte[] groupId, NostrEvent ev)
     {
         string key = Convert.ToHexStringLower(groupId);

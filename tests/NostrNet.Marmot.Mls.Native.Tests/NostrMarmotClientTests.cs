@@ -667,6 +667,127 @@ public class NostrMarmotClientTests
     }
 
     [Fact]
+    public async Task AddPeerAsync_SurfacesOwnCommitThroughCallerSubscribeAsync()
+    {
+        // Same shape as the preview15 SendAsync own-send fix: MLS won't
+        // decrypt the caller's own Commit when the relay echoes it back,
+        // so the library emits MarmotGroupStateChanged directly to the
+        // initiator's inbound channel. Caller's UI sees the membership
+        // change for their own action; Members reflects post-Commit state.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        using var charlieKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+        await using var charlie = await BuildAsync(charlieKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        await charlie.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var charlieKp = await alice.TryGetKeyPackageAsync(charlieKey.PublicKey, TimeSpan.FromSeconds(2));
+
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "own-commit-add");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        // Alice adds charlie — should return the Commit kind-445 event AND
+        // surface MarmotGroupStateChanged on alice's stream.
+        var commit = await alice.AddPeerAsync(aliceConvo, charlieKp!);
+        Assert.Equal(NostrNet.Marmot.MarmotKinds.GroupEvent, commit.Kind);
+
+        var aliceStateChange = await NextOfTypeAsync<MarmotGroupStateChanged>(aliceInbound);
+        Assert.Equal(aliceKey.PublicKey, aliceStateChange.Sender);
+        Assert.Equal(3, aliceStateChange.Conversation.Members.Count);
+        Assert.Contains(aliceStateChange.Conversation.Members, p => p.Equals(charlieKey.PublicKey));
+
+        // No second emit on alice's stream from the relay round-trip —
+        // the kind-445 will fail to decrypt and get parked silently.
+        using var idle = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+        var leak = await TryNextOfTypeAsync<MarmotGroupStateChanged>(aliceInbound, idle.Token);
+        Assert.Null(leak);
+
+        // Bob still sees his own state-change from the same Commit (peer path).
+        var bobStateChange = await NextOfTypeAsync<MarmotGroupStateChanged>(bobInbound);
+        Assert.Equal(aliceKey.PublicKey, bobStateChange.Sender);
+    }
+
+    [Fact]
+    public async Task RemovePeersAsync_SurfacesOwnCommitThroughCallerSubscribeAsync()
+    {
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        using var charlieKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+        await using var charlie = await BuildAsync(charlieKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        await charlie.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var charlieKp = await alice.TryGetKeyPackageAsync(charlieKey.PublicKey, TimeSpan.FromSeconds(2));
+
+        var aliceConvo = await alice.StartGroupAsync(new[] { bobKp!, charlieKp! }, "own-commit-remove");
+
+        // Alice kicks charlie.
+        var commit = await alice.RemovePeersAsync(aliceConvo, new[] { charlieKey.PublicKey });
+        Assert.Equal(NostrNet.Marmot.MarmotKinds.GroupEvent, commit.Kind);
+
+        var aliceStateChange = await NextOfTypeAsync<MarmotGroupStateChanged>(aliceInbound);
+        Assert.Equal(aliceKey.PublicKey, aliceStateChange.Sender);
+        Assert.Equal(2, aliceStateChange.Conversation.Members.Count);
+        Assert.DoesNotContain(aliceStateChange.Conversation.Members, p => p.Equals(charlieKey.PublicKey));
+
+        using var idle = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+        var leak = await TryNextOfTypeAsync<MarmotGroupStateChanged>(aliceInbound, idle.Token);
+        Assert.Null(leak);
+    }
+
+    [Fact]
+    public async Task RotateKeysAsync_SurfacesOwnCommitThroughCallerSubscribeAsync()
+    {
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "own-commit-rotate");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        // Alice rotates her own leaf keys.
+        var commit = await alice.RotateKeysAsync(aliceConvo);
+        Assert.Equal(NostrNet.Marmot.MarmotKinds.GroupEvent, commit.Kind);
+
+        var aliceStateChange = await NextOfTypeAsync<MarmotGroupStateChanged>(aliceInbound);
+        Assert.Equal(aliceKey.PublicKey, aliceStateChange.Sender);
+        // Members unchanged by a self-update — same 2 members.
+        Assert.Equal(2, aliceStateChange.Conversation.Members.Count);
+
+        using var idle = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+        var leak = await TryNextOfTypeAsync<MarmotGroupStateChanged>(aliceInbound, idle.Token);
+        Assert.Null(leak);
+    }
+
+    [Fact]
     public async Task AcceptInvite_DeletesConsumedKeyPackageBundle_SoReDeliveryIsFiltered()
     {
         // The bug: accepting a welcome left the consumed KP bundle in

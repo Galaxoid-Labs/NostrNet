@@ -688,14 +688,35 @@ rumor; the receive path unwraps it transparently before exposing
 ### Add / remove / rotate
 
 ```csharp
-await marmot.AddPeerAsync(convo, daveKpEvent);
-await marmot.RemovePeersAsync(convo, new[] { evePubkey });
-await marmot.RotateKeysAsync(convo);        // MLS self-update — forward secrecy refresh
+NostrEvent addCommit    = await marmot.AddPeerAsync(convo, daveKpEvent);
+NostrEvent removeCommit = await marmot.RemovePeersAsync(convo, new[] { evePubkey });
+NostrEvent rotateCommit = await marmot.RotateKeysAsync(convo);   // MLS self-update
 ```
 
-All three advance the MLS epoch. Existing members process the Commit
-via `SubscribeAsync` automatically; the provider's state advances and
-subsequent sends use the new exporter.
+All three advance the MLS epoch and now return the published kind-445
+Commit event for app-side correlation (source-compatible with the
+prior `Task` signature — discarding the result still works).
+
+**The caller's own `SubscribeAsync` stream surfaces a
+`MarmotGroupStateChanged` for each call**, mirroring `SendAsync`'s
+own-send echo. Same one-code-path render pattern: the state-change
+handler updates the local group view whether the user did the
+add/remove/rotate themselves or another member did. Peers see the
+same state-change via the normal receive path.
+
+```csharp
+case MarmotGroupStateChanged change:
+    bool initiatedByMe = change.Sender?.Equals(marmot.Identity) == true;
+    chat.UpdateRoster(change.Conversation.Members);
+    if (!initiatedByMe) Toast($"{change.Sender} updated the group");
+    break;
+```
+
+`change.Conversation.Members` reflects the post-Commit membership
+(refreshed via the provider at emit time), so a roster re-render
+"just works." Existing members on other devices receive the same
+Commit via their `GroupPumpAsync` and the provider's state advances
+to the new epoch; subsequent sends use the new exporter.
 
 ### Resume on startup
 

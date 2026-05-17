@@ -423,9 +423,14 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
     /// <summary>
     /// Adds a peer to an existing conversation. Publishes the Welcome
     /// gift wrap to the new peer and the Commit GroupEvent to the
-    /// conversation's relays.
+    /// conversation's relays. Surfaces a <see cref="MarmotGroupStateChanged"/>
+    /// to the caller's own <see cref="SubscribeAsync"/> stream (same
+    /// rationale as <see cref="SendAsync"/>'s own-send echo — MLS won't
+    /// decrypt our own Commit on the relay round-trip, so we emit it
+    /// directly). Returns the Commit kind-445 event so callers can
+    /// correlate by event id.
     /// </summary>
-    public async Task AddPeerAsync(
+    public async Task<NostrEvent> AddPeerAsync(
         MarmotConversation conversation,
         NostrEvent peerKeyPackageEvent,
         CancellationToken ct = default)
@@ -440,14 +445,20 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
 
         await _relay.PublishAsync(result.WelcomeGiftWrap, ct).ConfigureAwait(false);
         await _relay.PublishAsync(result.CommitGroupEvent, ct).ConfigureAwait(false);
+
+        await EmitOwnGroupStateChangeAsync(conversation, ct).ConfigureAwait(false);
+        return result.CommitGroupEvent;
     }
 
     /// <summary>
     /// Removes peers from an existing conversation. Publishes the
-    /// Commit GroupEvent so existing members (and the about-to-be-
-    /// removed peers) process the removal.
+    /// Commit GroupEvent so existing members process the removal; the
+    /// removed peers lose decrypt access from the new epoch onward.
+    /// Surfaces a <see cref="MarmotGroupStateChanged"/> to the caller's
+    /// own <see cref="SubscribeAsync"/> stream. Returns the Commit
+    /// kind-445 event.
     /// </summary>
-    public async Task RemovePeersAsync(
+    public async Task<NostrEvent> RemovePeersAsync(
         MarmotConversation conversation,
         IReadOnlyList<PublicKey> peersToRemove,
         CancellationToken ct = default)
@@ -459,13 +470,19 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
         var result = await MarmotChat.RemovePeerAsync(
             _provider, conversation, peersToRemove, ct).ConfigureAwait(false);
         await _relay.PublishAsync(result.CommitGroupEvent, ct).ConfigureAwait(false);
+
+        await EmitOwnGroupStateChangeAsync(conversation, ct).ConfigureAwait(false);
+        return result.CommitGroupEvent;
     }
 
     /// <summary>
     /// Rotates the local member's leaf keys (MLS self-update) and
     /// publishes the resulting Commit so existing members advance.
+    /// Surfaces a <see cref="MarmotGroupStateChanged"/> to the caller's
+    /// own <see cref="SubscribeAsync"/> stream. Returns the Commit
+    /// kind-445 event.
     /// </summary>
-    public async Task RotateKeysAsync(
+    public async Task<NostrEvent> RotateKeysAsync(
         MarmotConversation conversation,
         CancellationToken ct = default)
     {
@@ -474,6 +491,9 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
 
         var result = await MarmotChat.RotateKeysAsync(_provider, conversation, ct).ConfigureAwait(false);
         await _relay.PublishAsync(result.CommitGroupEvent, ct).ConfigureAwait(false);
+
+        await EmitOwnGroupStateChangeAsync(conversation, ct).ConfigureAwait(false);
+        return result.CommitGroupEvent;
     }
 
     /// <summary>

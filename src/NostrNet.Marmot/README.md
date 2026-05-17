@@ -454,6 +454,47 @@ decrypt own sends), parks the event, eventually evicts. Bounded memory
 churn that doesn't affect correctness; the message itself surfaced
 exactly once via the library-side emission at publish time.
 
+### State-change semantics — own Commits surface the same way
+
+The three Commit-emitting methods — `AddPeerAsync`, `RemovePeersAsync`,
+`RotateKeysAsync` — follow the same own-send echo pattern as
+`SendAsync`. Each returns `Task<NostrEvent>` (the published Commit
+kind-445) and emits a `MarmotGroupStateChanged` to the caller's own
+`SubscribeAsync` stream:
+
+```csharp
+NostrEvent commit = await marmot.AddPeerAsync(conv, daveKp);
+// alice's own SubscribeAsync now yields a MarmotGroupStateChanged
+// with Sender == alice and Conversation.Members reflecting the
+// post-add roster.
+```
+
+Apps render group state changes through one handler regardless of who
+initiated them:
+
+```csharp
+case MarmotGroupStateChanged change:
+    bool initiatedByMe = change.Sender?.Equals(client.Identity) == true;
+    chat.UpdateRoster(change.Conversation.Members);
+    break;
+```
+
+Same MLS-decrypt-asymmetry rationale: the caller's provider can't
+decrypt their own Commit on the relay round-trip (sender has already
+advanced past the pre-Commit epoch the receive-side processor needs).
+Without library-side emission the initiator's UI would silently miss
+membership / key-rotation events they themselves triggered. Peers see
+the Commit normally via their own `GroupPumpAsync`.
+
+The kind-445 also comes back through the initiator's pump and parks
+(can't decrypt own Commit) — same bounded churn as the SendAsync case,
+no duplicate emission. The synthetic emit happens AFTER `_relay.PublishAsync`
+succeeds, so a publish failure short-circuits the local state-change
+event too.
+
+`change.Conversation.Members` is refreshed from the provider at emit
+time, so post-Commit roster renders are consistent with what peers see.
+
 ### Automatic KeyPackage rotation
 
 MIP-00 says clients SHOULD rotate KeyPackages periodically and after

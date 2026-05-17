@@ -152,6 +152,29 @@ this — only the Native package pulls Rust in.
     solved by the log (it's an MLS-layer problem; see the Marmot section
     in the README for why a NIP-17-style self-wrap of Welcomes would
     break MLS forward secrecy).
+11. **Own sends and own Commits surface through the inbound channel
+    via library-side emission.** MLS application-message encryption
+    and Commits are one-way per leaf — the sender's provider can't
+    decrypt its own ciphertext when the relay broadcasts it back
+    (the outbound ratchet / epoch has already advanced past the
+    receive-side position). Without compensation, the initiator's
+    `SubscribeAsync` stream silently misses every action they
+    themselves took. `NostrMarmotClient.SendAsync` /
+    `AddPeerAsync` / `RemovePeersAsync` / `RotateKeysAsync` therefore
+    each (a) return the published kind-445 `NostrEvent` (caller
+    correlates by event id), (b) synthesize the corresponding
+    `MarmotMessageReceived` or `MarmotGroupStateChanged` AFTER
+    `_relay.PublishAsync` succeeds, and (c) write it to
+    `_inboundChannel` (and `_messageLog` for application messages).
+    The kind-445 still round-trips through the initiator's pump
+    where it fails to decrypt and parks — bounded `MaxParkedPerGroup`
+    / `MaxRetriesPerParked` churn that doesn't impact correctness;
+    the event surfaced exactly once via the library emit. State
+    changes refresh `MarmotConversation.Members` from the provider
+    at emit time so the event's `Conversation.Members` matches what
+    peers see. **Don't try to "skip own kind-445 on the receive
+    pump" by tracking own-published EventIds** — adds complexity for
+    a memory micro-optimization the MLS layer already bounds.
 
 ## NIPs implemented
 
