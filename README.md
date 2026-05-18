@@ -133,7 +133,8 @@ full design and a complete walkthrough of 1:1 and group flows.
 
 Group ops supported end-to-end through `NostrNet.Marmot.Mls.Native` (OpenMLS via FFI):
 1:1 + N-party conversations, add peer, remove peer, key rotation
-(MLS self-update), application messages, persistent state (SQLite).
+(MLS self-update), application messages, **NIP-25 reactions and NIP-09
+deletions over the same MLS application channel**, persistent state (SQLite).
 Conversation resume on startup via
 `NostrMarmotClient.LoadExistingConversationsAsync` (built on the
 `IMarmotMlsProvider.ListGroupsAsync` primitive). State-DB helpers

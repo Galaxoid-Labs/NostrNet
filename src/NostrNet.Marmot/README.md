@@ -448,6 +448,100 @@ keyed on event id stays consistent across own + peer messages and
 across sessions (`LoadHistoryAsync` on next startup replays the user's
 own sends from the message log).
 
+#### Inner rumor surface
+
+Every `MarmotMessageReceived` also carries the **inner Marmot rumor**:
+
+| Field | Meaning |
+|---|---|
+| `EventId` | The outer kind-445 event id (dedup key for relays / message log). |
+| `RumorId` | The inner rumor id — canonical NIP-01 hash of the unsigned JSON payload. **Stable across senders** — Alice's own view and Bob's received view see the same id for the same logical message. |
+| `RumorKind` | `9` chat (<see cref="MarmotChat.ChatMessageRumorKind"/>), `7` reaction (<see cref="MarmotChat.ReactionRumorKind"/>), `5` deletion (<see cref="MarmotChat.DeletionRumorKind"/>). |
+| `RumorTags` | Inner rumor tags — for reactions `["e", targetRumorId]`, for deletions `["e", targetRumorId]` + `["k", targetKind]`. |
+| `Plaintext` | Chat body / reaction text / deletion reason. |
+
+Apps switch on `RumorKind` the same way they branch on
+`UnwrappedDirectMessage.Kind` in the NIP-17 receive path.
+
+### Reactions and deletions (NIP-25 / NIP-09 over Marmot)
+
+Reactions and NIP-09 deletion requests travel inside the same MLS
+application channel as chat messages — just with different inner
+rumor kinds (7 and 5 respectively). The high-level helpers mirror
+the NIP-17 shape, including own-send echo through the inbound channel
+(the MLS ratchet asymmetry that motivates `SendAsync`'s synthetic
+emission applies to every application-message kind, not just chat):
+
+```csharp
+// React to a message you received. targetRumorId is the INNER rumor
+// id (msg.RumorId), NOT the outer kind-445 event id.
+await marmot.SendReactionAsync(
+    conversation: conv,
+    targetRumorId: msg.RumorId,
+    reaction: "👍");          // emoji / "+" / "-" / NIP-25 :shortcode:
+
+// Delete one of your own messages (or a reaction). The k tag declares
+// the kind being deleted so receivers can route without the original
+// event in scope.
+await marmot.SendDeletionAsync(
+    conversation: conv,
+    targetRumorId: msg.RumorId,
+    targetKind: MarmotChat.ChatMessageRumorKind,
+    reason: "typo");          // optional NIP-09 reason
+```
+
+Branch on `RumorKind` in the receive switch:
+
+```csharp
+case MarmotMessageReceived msg:
+    switch (msg.RumorKind)
+    {
+        case MarmotChat.ChatMessageRumorKind:           // 9
+            chat.AddRow(msg.Plaintext, IsMine(msg));
+            break;
+        case MarmotChat.ReactionRumorKind:              // 7
+            string? target = msg.RumorTags
+                .FirstOrDefault(t => t.Count >= 2 && t[0] == "e")?[1];
+            if (target is not null)
+                chat.AddReaction(target, msg.Plaintext, msg.Sender);
+            break;
+        case MarmotChat.DeletionRumorKind:              // 5
+            // NIP-09 is advisory: only honor the deletion when
+            // msg.Sender authored the targeted rumor.
+            string? deletedId = msg.RumorTags
+                .FirstOrDefault(t => t.Count >= 2 && t[0] == "e")?[1];
+            if (deletedId is not null && IsAuthorOf(deletedId, msg.Sender))
+                chat.ApplyDeletion(deletedId);
+            break;
+    }
+    break;
+```
+
+**Why the e-tag MUST point at `RumorId`, not `EventId`:** every sender
+republishing the same logical message produces a different outer
+kind-445 event id (different ephemeral key, different `created_at`).
+Only the inner rumor id is stable across senders — both Alice's
+own-send echo and Bob's MLS-decrypted view carry the same value. A
+reaction or deletion keyed on outer event id wouldn't match across
+participants.
+
+**NIP-09 validation is the consumer's job.** The library can't enforce
+that a deletion's sender authored the targeted rumor — the original
+event isn't in scope at receive time. Apps look up the targeted rumor
+in their local message log and compare authors before applying.
+
+For pre-computing the rumor id (e.g. optimistic UI before the round
+trip):
+
+```csharp
+UnsignedEvent rumor = MarmotChat.BuildReactionRumor(
+    targetRumorId: msg.RumorId,
+    reaction: "🔥",
+    author: client.Identity);
+EventId predictedId = rumor.ComputeId();   // matches msg.RumorId on echo
+// ... low-level: MarmotChat.EncryptRumorAsync(provider, conv, rumor)
+```
+
 The kind-445 the sender publishes also comes back through the receive
 pump via relay broadcast. The pump tries to decrypt, fails (MLS won't
 decrypt own sends), parks the event, eventually evicts. Bounded memory

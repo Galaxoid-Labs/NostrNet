@@ -356,6 +356,14 @@ public sealed partial class NostrMarmotClient
             MarmotMessageKind.Application => new MarmotMessageReceived(
                 Conversation: convForEvent,
                 EventId: ev.Id,
+                // Fall back to the outer kind-445 EventId when the
+                // plaintext payload wasn't a parseable Marmot rumor
+                // (legacy / non-Marmot senders). Apps that key reactions
+                // / deletions on RumorId thus still get a stable id;
+                // they just can't address it from a different sender.
+                RumorId: processed.RumorId ?? ev.Id,
+                RumorKind: processed.RumorKind ?? MarmotChat.ChatMessageRumorKind,
+                RumorTags: processed.RumorTags ?? Array.Empty<IReadOnlyList<string>>(),
                 Sender: processed.Sender,
                 Plaintext: processed.Plaintext ?? string.Empty,
                 ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt)),

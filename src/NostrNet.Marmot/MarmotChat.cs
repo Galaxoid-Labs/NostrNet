@@ -166,7 +166,7 @@ public enum MarmotMessageKind
 
 /// <summary>The result of decrypting and processing one inbound kind-445.</summary>
 /// <param name="Kind">What kind of MLS message was processed.</param>
-/// <param name="Plaintext">For <see cref="MarmotMessageKind.Application"/>, the decrypted plaintext (UTF-8). Null otherwise.</param>
+/// <param name="Plaintext">For <see cref="MarmotMessageKind.Application"/>, the decrypted plaintext text body (UTF-8). Null otherwise.</param>
 /// <param name="EpochAdvanced">
 /// <c>true</c> if the group's epoch advanced as a result of processing
 /// this message. Callers should treat any cached exporter secret as
@@ -179,11 +179,30 @@ public enum MarmotMessageKind
 /// uses an ephemeral key). <c>null</c> when the provider can't resolve
 /// the sender (e.g. external proposals).
 /// </param>
+/// <param name="RumorId">
+/// For <see cref="MarmotMessageKind.Application"/>, the inner Marmot rumor
+/// id (canonical NIP-01 hash of the unsigned plaintext rumor). <c>null</c>
+/// for non-application messages or when the plaintext payload isn't a
+/// parseable rumor JSON (legacy / non-Marmot senders).
+/// </param>
+/// <param name="RumorKind">
+/// For <see cref="MarmotMessageKind.Application"/>, the inner Nostr kind
+/// (9 chat / 7 reaction / 5 deletion). <c>null</c> for non-application
+/// messages. Defaults to <see cref="MarmotChat.ChatMessageRumorKind"/>
+/// when the plaintext isn't a rumor JSON.
+/// </param>
+/// <param name="RumorTags">
+/// For <see cref="MarmotMessageKind.Application"/>, the inner rumor's
+/// tags. Empty when not applicable.
+/// </param>
 public sealed record MarmotInboundMessage(
     MarmotMessageKind Kind,
     string? Plaintext,
     bool EpochAdvanced,
-    PublicKey? Sender = null);
+    PublicKey? Sender = null,
+    EventId? RumorId = null,
+    int? RumorKind = null,
+    IReadOnlyList<IReadOnlyList<string>>? RumorTags = null);
 
 /// <summary>High-level helpers for one-to-one Marmot conversations.</summary>
 public static class MarmotChat
@@ -514,6 +533,22 @@ public static class MarmotChat
     public const int ChatMessageRumorKind = 9;
 
     /// <summary>
+    /// NIP-25 reaction rumor kind. Reactions to Marmot messages travel
+    /// inside the same kind-445 application channel — the inner rumor is
+    /// a kind-7 carrying the reaction text (emoji / NIP-25 token) and an
+    /// <c>e</c> tag referencing the target rumor id.
+    /// </summary>
+    public const int ReactionRumorKind = 7;
+
+    /// <summary>
+    /// NIP-09 deletion-request rumor kind. Deletions for Marmot messages
+    /// travel inside the same kind-445 application channel — the inner
+    /// rumor is a kind-5 carrying the optional reason as content plus
+    /// <c>["e", targetRumorId]</c> and <c>["k", targetKind]</c> tags.
+    /// </summary>
+    public const int DeletionRumorKind = 5;
+
+    /// <summary>
     /// Encrypts <paramref name="plaintext"/> as an application message in
     /// <paramref name="conversation"/> and returns a kind-445 GroupEvent
     /// ready to publish.
@@ -550,6 +585,122 @@ public static class MarmotChat
     }
 
     /// <summary>
+    /// Builds an unsigned reaction rumor (kind 7) targeting
+    /// <paramref name="targetRumorId"/>. Use this when you want to
+    /// pre-compute the rumor id before invoking
+    /// <see cref="NostrMarmotClient.SendReactionAsync"/> or
+    /// <see cref="EncryptRumorAsync"/>.
+    /// </summary>
+    /// <param name="targetRumorId">The inner rumor id of the Marmot message being reacted to.</param>
+    /// <param name="reaction">The reaction text — typically an emoji, <c>+</c>, <c>-</c>, or a NIP-25 <c>:shortcode:</c>.</param>
+    /// <param name="author">The reactor's identity pubkey (also the rumor's <c>pubkey</c>).</param>
+    /// <param name="additionalTags">Optional extra tags (e.g. NIP-25 custom-emoji declaration).</param>
+    /// <param name="createdAt">Optional real timestamp; defaults to now.</param>
+    public static UnsignedEvent BuildReactionRumor(
+        EventId targetRumorId,
+        string reaction,
+        PublicKey author,
+        IReadOnlyList<IReadOnlyList<string>>? additionalTags = null,
+        DateTimeOffset? createdAt = null)
+    {
+        ArgumentNullException.ThrowIfNull(targetRumorId);
+        ArgumentNullException.ThrowIfNull(reaction);
+        ArgumentNullException.ThrowIfNull(author);
+
+        var tags = new List<IReadOnlyList<string>>
+        {
+            new[] { "e", targetRumorId.ToHex() },
+        };
+
+        if (additionalTags is not null)
+        {
+            foreach (var t in additionalTags)
+            {
+                tags.Add(t);
+            }
+        }
+
+        return new UnsignedEvent
+        {
+            PubKey = author,
+            CreatedAt = (createdAt ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds(),
+            Kind = ReactionRumorKind,
+            Tags = tags,
+            Content = reaction,
+        };
+    }
+
+    /// <summary>
+    /// Builds an unsigned NIP-09 deletion-request rumor (kind 5)
+    /// targeting <paramref name="targetRumorId"/>. The rumor carries
+    /// <c>["e", targetRumorId]</c> + <c>["k", targetKind]</c> tags.
+    /// </summary>
+    /// <param name="targetRumorId">The inner rumor id being deleted — NOT the outer kind-445 event id.</param>
+    /// <param name="targetKind">The kind of the rumor being deleted (typically <see cref="ChatMessageRumorKind"/> or <see cref="ReactionRumorKind"/>).</param>
+    /// <param name="author">The deleter's identity pubkey.</param>
+    /// <param name="reason">Optional NIP-09 reason string; empty content when null.</param>
+    /// <param name="createdAt">Optional real timestamp; defaults to now.</param>
+    /// <remarks>
+    /// NIP-09 validation (deletion's author must equal the targeted
+    /// rumor's author) is the consumer's responsibility — the library
+    /// can't enforce it because the original event isn't in scope.
+    /// </remarks>
+    public static UnsignedEvent BuildDeletionRumor(
+        EventId targetRumorId,
+        int targetKind,
+        PublicKey author,
+        string? reason = null,
+        DateTimeOffset? createdAt = null)
+    {
+        ArgumentNullException.ThrowIfNull(targetRumorId);
+        ArgumentNullException.ThrowIfNull(author);
+
+        var tags = new List<IReadOnlyList<string>>
+        {
+            new[] { "e", targetRumorId.ToHex() },
+            new[] { "k", targetKind.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+        };
+
+        return new UnsignedEvent
+        {
+            PubKey = author,
+            CreatedAt = (createdAt ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds(),
+            Kind = DeletionRumorKind,
+            Tags = tags,
+            Content = reason ?? string.Empty,
+        };
+    }
+
+    /// <summary>
+    /// Encrypts an arbitrary unsigned Marmot rumor as an MLS application
+    /// message and returns a kind-445 GroupEvent ready to publish. Use
+    /// this when you need to send a non-chat rumor (reaction, deletion,
+    /// or any other kind) and want explicit control over the rumor
+    /// shape — for the common chat case prefer
+    /// <see cref="EncryptMessageAsync"/>.
+    /// </summary>
+    public static async Task<NostrEvent> EncryptRumorAsync(
+        IMarmotMlsProvider provider,
+        MarmotConversation conversation,
+        UnsignedEvent rumor,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        ArgumentNullException.ThrowIfNull(conversation);
+        ArgumentNullException.ThrowIfNull(rumor);
+
+        byte[] rumorJson = SerializeRumor(rumor);
+
+        byte[] mlsBytes = await provider.EncryptApplicationMessageAsync(
+            conversation.NostrGroupId, rumorJson, ct).ConfigureAwait(false);
+
+        byte[] exporter = await provider.CurrentExporterSecretAsync(
+            conversation.NostrGroupId, ct).ConfigureAwait(false);
+
+        return GroupEvent.Build(mlsBytes, exporter, conversation.NostrGroupId);
+    }
+
+    /// <summary>
     /// Build the JSON wire form of a Marmot chat-message rumor (an
     /// unsigned Nostr event with id but no sig). Exposed internally so
     /// the tests + receive path can produce / verify identical bytes.
@@ -559,10 +710,26 @@ public static class MarmotChat
         long createdAt,
         string content)
     {
-        // Empty tags array — Marmot chat messages currently have no tags.
-        var tags = Array.Empty<IReadOnlyList<string>>();
-        EventId id = EventSerializer.ComputeId(
-            senderPubkey, createdAt, ChatMessageRumorKind, tags, content);
+        var rumor = new UnsignedEvent
+        {
+            PubKey = senderPubkey,
+            CreatedAt = createdAt,
+            Kind = ChatMessageRumorKind,
+            Tags = Array.Empty<IReadOnlyList<string>>(),
+            Content = content,
+        };
+        return SerializeRumor(rumor);
+    }
+
+    /// <summary>
+    /// Build the JSON wire form of any Marmot rumor (unsigned Nostr event
+    /// with canonical id + no sig). Shared between chat / reaction /
+    /// deletion encrypt paths so all kinds round-trip through identical
+    /// bytes.
+    /// </summary>
+    internal static byte[] SerializeRumor(UnsignedEvent rumor)
+    {
+        EventId id = rumor.ComputeId();
 
         using var ms = new MemoryStream();
         var options = new JsonWriterOptions
@@ -573,16 +740,115 @@ public static class MarmotChat
         {
             writer.WriteStartObject();
             writer.WriteString("id", id.ToHex());
-            writer.WriteString("pubkey", senderPubkey.ToHex());
-            writer.WriteNumber("created_at", createdAt);
-            writer.WriteNumber("kind", ChatMessageRumorKind);
+            writer.WriteString("pubkey", rumor.PubKey.ToHex());
+            writer.WriteNumber("created_at", rumor.CreatedAt);
+            writer.WriteNumber("kind", rumor.Kind);
             writer.WriteStartArray("tags");
+            foreach (var row in rumor.Tags)
+            {
+                writer.WriteStartArray();
+                foreach (var cell in row)
+                {
+                    writer.WriteStringValue(cell);
+                }
+                writer.WriteEndArray();
+            }
             writer.WriteEndArray();
-            writer.WriteString("content", content);
+            writer.WriteString("content", rumor.Content);
             writer.WriteEndObject();
         }
 
         return ms.ToArray();
+    }
+
+    /// <summary>
+    /// Parsed shape of a Marmot rumor payload. <see cref="Id"/> is the
+    /// rumor's NIP-01 canonical id; <see cref="Sender"/> is the rumor's
+    /// declared author (unsigned — for cryptographic identification use
+    /// the MLS-resolved sender from the provider instead).
+    /// </summary>
+    internal sealed record ParsedRumor(
+        EventId? Id,
+        int Kind,
+        IReadOnlyList<IReadOnlyList<string>> Tags,
+        string Content,
+        PublicKey? Sender);
+
+    /// <summary>
+    /// Parses a decrypted Marmot application-message plaintext. Per MIP-03
+    /// the plaintext is the JSON of an unsigned Nostr event; this lifts
+    /// the rumor's id, kind, tags, content, and declared author. Returns
+    /// <c>null</c> when the bytes don't parse as a rumor — apps fall back
+    /// to rendering the raw UTF-8 with sensible defaults.
+    /// </summary>
+    internal static ParsedRumor? TryParseRumor(byte[] plaintextBytes)
+    {
+        ArgumentNullException.ThrowIfNull(plaintextBytes);
+        if (plaintextBytes.Length == 0 || plaintextBytes[0] != (byte)'{')
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(plaintextBytes);
+            var root = doc.RootElement;
+
+            EventId? id = null;
+            if (root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                && idEl.GetString() is string idHex && idHex.Length == 64)
+            {
+                try { id = EventId.FromHex(idHex); }
+                catch { id = null; }
+            }
+
+            int kind = ChatMessageRumorKind;
+            if (root.TryGetProperty("kind", out var kindEl) && kindEl.ValueKind == JsonValueKind.Number
+                && kindEl.TryGetInt32(out int k))
+            {
+                kind = k;
+            }
+
+            var tags = new List<IReadOnlyList<string>>();
+            if (root.TryGetProperty("tags", out var tagsEl) && tagsEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var row in tagsEl.EnumerateArray())
+                {
+                    if (row.ValueKind != JsonValueKind.Array) continue;
+                    var rowList = new List<string>();
+                    foreach (var cell in row.EnumerateArray())
+                    {
+                        rowList.Add(cell.ValueKind == JsonValueKind.String
+                            ? cell.GetString() ?? string.Empty
+                            : cell.ToString());
+                    }
+                    tags.Add(rowList);
+                }
+            }
+
+            string content = root.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
+                ? c.GetString() ?? string.Empty
+                : string.Empty;
+
+            PublicKey? sender = null;
+            if (root.TryGetProperty("pubkey", out var p) && p.ValueKind == JsonValueKind.String
+                && p.GetString() is string hex && hex.Length == 64)
+            {
+                try { sender = PublicKey.FromHex(hex); }
+                catch { sender = null; }
+            }
+
+            return new ParsedRumor(
+                Id: id,
+                Kind: kind,
+                Tags: tags,
+                Content: content,
+                Sender: sender);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -595,33 +861,10 @@ public static class MarmotChat
     /// </summary>
     internal static (string Content, PublicKey? Sender) ExtractChatRumor(byte[] plaintextBytes)
     {
-        ArgumentNullException.ThrowIfNull(plaintextBytes);
-        if (plaintextBytes.Length == 0 || plaintextBytes[0] != (byte)'{')
-        {
-            return (SysEncoding.UTF8.GetString(plaintextBytes), null);
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(plaintextBytes);
-            var root = doc.RootElement;
-            string content = root.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
-                ? c.GetString() ?? string.Empty
-                : SysEncoding.UTF8.GetString(plaintextBytes);
-            PublicKey? sender = null;
-            if (root.TryGetProperty("pubkey", out var p) && p.ValueKind == JsonValueKind.String
-                && p.GetString() is string hex && hex.Length == 64)
-            {
-                try { sender = PublicKey.FromHex(hex); }
-                catch { sender = null; }
-            }
-
-            return (content, sender);
-        }
-        catch (JsonException)
-        {
-            return (SysEncoding.UTF8.GetString(plaintextBytes), null);
-        }
+        var parsed = TryParseRumor(plaintextBytes);
+        return parsed is null
+            ? (SysEncoding.UTF8.GetString(plaintextBytes), null)
+            : (parsed.Content, parsed.Sender);
     }
 
     /// <summary>
@@ -758,18 +1001,33 @@ public static class MarmotChat
 
         string? plaintext = null;
         PublicKey? sender = processed.Sender;
+        EventId? rumorId = null;
+        int? rumorKind = null;
+        IReadOnlyList<IReadOnlyList<string>>? rumorTags = null;
         if (kind == MarmotMessageKind.Application)
         {
-            var (content, rumorSender) = ExtractChatRumor(processed.ApplicationPayload);
-            plaintext = content;
-            // Prefer the MLS-resolved sender when available; the rumor
-            // pubkey is unsigned and could be spoofed, but a Marmot-
-            // conforming peer always sets it to the same identity the
-            // MLS layer authenticates, so it's useful as a fallback.
-            sender ??= rumorSender;
+            var parsed = TryParseRumor(processed.ApplicationPayload);
+            if (parsed is not null)
+            {
+                plaintext = parsed.Content;
+                // Prefer the MLS-resolved sender when available; the rumor
+                // pubkey is unsigned and could be spoofed, but a Marmot-
+                // conforming peer always sets it to the same identity the
+                // MLS layer authenticates, so it's useful as a fallback.
+                sender ??= parsed.Sender;
+                rumorId = parsed.Id;
+                rumorKind = parsed.Kind;
+                rumorTags = parsed.Tags;
+            }
+            else
+            {
+                plaintext = SysEncoding.UTF8.GetString(processed.ApplicationPayload);
+            }
         }
 
-        return new MarmotInboundMessage(kind, plaintext, processed.EpochAdvanced, sender);
+        return new MarmotInboundMessage(
+            kind, plaintext, processed.EpochAdvanced, sender,
+            rumorId, rumorKind, rumorTags);
     }
 
     /// <summary>

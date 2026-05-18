@@ -534,26 +534,156 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(text);
         EnsureNotDisposed();
 
-        var ev = await MarmotChat.EncryptMessageAsync(_provider, conversation, _identityKey, text, ct).ConfigureAwait(false);
+        // Build the rumor explicitly so we can echo the same RumorId on
+        // the synthetic own-send. The receive-side ratchet can't decrypt
+        // our own ciphertext, so without echoing the rumor id apps would
+        // see a different stable id for the message they themselves sent
+        // versus what peers see.
+        var rumor = new UnsignedEvent
+        {
+            PubKey = _identityKey.PublicKey,
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            Kind = MarmotChat.ChatMessageRumorKind,
+            Tags = Array.Empty<IReadOnlyList<string>>(),
+            Content = text,
+        };
+        EventId rumorId = rumor.ComputeId();
+
+        var ev = await MarmotChat.EncryptRumorAsync(_provider, conversation, rumor, ct).ConfigureAwait(false);
         await _relay.PublishAsync(ev, ct).ConfigureAwait(false);
 
-        // Build the local MarmotMessageReceived for our own send. The
-        // EventId matches the kind-445 that just hit the wire, so any
-        // future receive-side dedup (or app-side correlation by event id)
-        // works without divergence. Sender is our identity — what
-        // MarmotChat.ExtractChatRumor would have surfaced if MLS could
-        // decrypt our own send.
         var own = new MarmotMessageReceived(
             Conversation: conversation,
             EventId: ev.Id,
+            RumorId: rumorId,
+            RumorKind: rumor.Kind,
+            RumorTags: rumor.Tags,
             Sender: _identityKey.PublicKey,
             Plaintext: text,
             ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt));
 
-        // Append to the message log first so a subscriber that reads back
-        // via GetLastMessageAsync immediately after seeing the inbound
-        // event finds the same record. Mirror the receive path's
-        // fail-soft policy — a broken log backend shouldn't poison send.
+        await EmitOwnApplicationMessageAsync(own, ct).ConfigureAwait(false);
+        return ev;
+    }
+
+    /// <summary>
+    /// Sends a NIP-25 reaction in <paramref name="conversation"/> targeting
+    /// the inner rumor <paramref name="targetRumorId"/>. Surfaces the
+    /// own-send via <see cref="SubscribeAsync"/> + <see cref="IMarmotMessageLog"/>
+    /// the same way <see cref="SendAsync"/> does (the MLS ratchet
+    /// asymmetry — sender can't decrypt own ciphertext — applies to
+    /// every application message kind, not just chat).
+    /// </summary>
+    /// <param name="conversation">The conversation to react in.</param>
+    /// <param name="targetRumorId">
+    /// The inner Marmot rumor id being reacted to. Use
+    /// <see cref="MarmotMessageReceived.RumorId"/>, NOT the outer
+    /// <see cref="MarmotMessageReceived.EventId"/>.
+    /// </param>
+    /// <param name="reaction">Reaction text — emoji, <c>+</c>, <c>-</c>, or NIP-25 <c>:shortcode:</c>.</param>
+    /// <param name="additionalTags">Optional extra tags (e.g. NIP-25 custom-emoji declaration).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The published kind-445 event so callers can correlate by event id.</returns>
+    public async Task<NostrEvent> SendReactionAsync(
+        MarmotConversation conversation,
+        EventId targetRumorId,
+        string reaction,
+        IReadOnlyList<IReadOnlyList<string>>? additionalTags = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
+        ArgumentNullException.ThrowIfNull(targetRumorId);
+        ArgumentNullException.ThrowIfNull(reaction);
+        EnsureNotDisposed();
+
+        var rumor = MarmotChat.BuildReactionRumor(
+            targetRumorId, reaction, _identityKey.PublicKey, additionalTags);
+        EventId rumorId = rumor.ComputeId();
+
+        var ev = await MarmotChat.EncryptRumorAsync(_provider, conversation, rumor, ct).ConfigureAwait(false);
+        await _relay.PublishAsync(ev, ct).ConfigureAwait(false);
+
+        var own = new MarmotMessageReceived(
+            Conversation: conversation,
+            EventId: ev.Id,
+            RumorId: rumorId,
+            RumorKind: rumor.Kind,
+            RumorTags: rumor.Tags,
+            Sender: _identityKey.PublicKey,
+            Plaintext: reaction,
+            ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt));
+
+        await EmitOwnApplicationMessageAsync(own, ct).ConfigureAwait(false);
+        return ev;
+    }
+
+    /// <summary>
+    /// Sends a NIP-09 deletion request in <paramref name="conversation"/>
+    /// targeting the inner rumor <paramref name="targetRumorId"/>.
+    /// Surfaces the own-send via <see cref="SubscribeAsync"/> + the
+    /// configured <see cref="IMarmotMessageLog"/>.
+    /// </summary>
+    /// <param name="conversation">The conversation containing the rumor being deleted.</param>
+    /// <param name="targetRumorId">
+    /// The inner Marmot rumor id being deleted. Use
+    /// <see cref="MarmotMessageReceived.RumorId"/>, NOT the outer
+    /// <see cref="MarmotMessageReceived.EventId"/>.
+    /// </param>
+    /// <param name="targetKind">
+    /// The kind of the rumor being deleted — typically
+    /// <see cref="MarmotChat.ChatMessageRumorKind"/> (9) or
+    /// <see cref="MarmotChat.ReactionRumorKind"/> (7).
+    /// </param>
+    /// <param name="reason">Optional NIP-09 reason string; empty content when null.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// NIP-09 is advisory — receiving apps only honor the deletion when
+    /// the sender (<see cref="MarmotMessageReceived.Sender"/>) matches
+    /// the author of the targeted rumor. The library cannot enforce
+    /// that check because the original event isn't in scope at receive
+    /// time; consumers compare against their local message log.
+    /// </remarks>
+    public async Task<NostrEvent> SendDeletionAsync(
+        MarmotConversation conversation,
+        EventId targetRumorId,
+        int targetKind,
+        string? reason = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
+        ArgumentNullException.ThrowIfNull(targetRumorId);
+        EnsureNotDisposed();
+
+        var rumor = MarmotChat.BuildDeletionRumor(
+            targetRumorId, targetKind, _identityKey.PublicKey, reason);
+        EventId rumorId = rumor.ComputeId();
+
+        var ev = await MarmotChat.EncryptRumorAsync(_provider, conversation, rumor, ct).ConfigureAwait(false);
+        await _relay.PublishAsync(ev, ct).ConfigureAwait(false);
+
+        var own = new MarmotMessageReceived(
+            Conversation: conversation,
+            EventId: ev.Id,
+            RumorId: rumorId,
+            RumorKind: rumor.Kind,
+            RumorTags: rumor.Tags,
+            Sender: _identityKey.PublicKey,
+            Plaintext: reason ?? string.Empty,
+            ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(ev.CreatedAt));
+
+        await EmitOwnApplicationMessageAsync(own, ct).ConfigureAwait(false);
+        return ev;
+    }
+
+    /// <summary>
+    /// Shared own-send emission path: log the synthetic
+    /// <see cref="MarmotMessageReceived"/>, then write it to the inbound
+    /// channel. Both steps are fail-soft.
+    /// </summary>
+    private async Task EmitOwnApplicationMessageAsync(
+        MarmotMessageReceived own,
+        CancellationToken ct)
+    {
         if (_messageLog is not null)
         {
             try
@@ -569,11 +699,6 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
             }
         }
 
-        // Surface to live subscribers. The channel may not be initialized
-        // yet (caller hasn't started SubscribeAsync) — in that case the
-        // send still completes, we just have no one to notify yet. Apps
-        // that read back via LoadHistoryAsync on startup still see it
-        // via the log.
         if (_inboundChannel is not null)
         {
             try
@@ -582,11 +707,9 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
             }
             catch (System.Threading.Channels.ChannelClosedException)
             {
-                // Disposal raced with this send; the user is leaving anyway.
+                // Disposal raced; nothing to do.
             }
         }
-
-        return ev;
     }
 
     // ──────────────────────────────────────────────────────────────

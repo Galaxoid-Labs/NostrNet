@@ -160,8 +160,9 @@ this — only the Native package pulls Rust in.
     receive-side position). Without compensation, the initiator's
     `SubscribeAsync` stream silently misses every action they
     themselves took. `NostrMarmotClient.SendAsync` /
-    `AddPeerAsync` / `RemovePeersAsync` / `RotateKeysAsync` therefore
-    each (a) return the published kind-445 `NostrEvent` (caller
+    `SendReactionAsync` / `SendDeletionAsync` / `AddPeerAsync` /
+    `RemovePeersAsync` / `RotateKeysAsync` therefore each
+    (a) return the published kind-445 `NostrEvent` (caller
     correlates by event id), (b) synthesize the corresponding
     `MarmotMessageReceived` or `MarmotGroupStateChanged` AFTER
     `_relay.PublishAsync` succeeds, and (c) write it to
@@ -175,6 +176,21 @@ this — only the Native package pulls Rust in.
     peers see. **Don't try to "skip own kind-445 on the receive
     pump" by tracking own-published EventIds** — adds complexity for
     a memory micro-optimization the MLS layer already bounds.
+12. **Marmot reactions + deletions ride the same MLS application
+    channel as chat messages.** Distinct rumor kinds, distinct
+    constants on `MarmotChat` (`ReactionRumorKind = 7`,
+    `DeletionRumorKind = 5`, `ChatMessageRumorKind = 9`). Each
+    `MarmotMessageReceived` surfaces the inner rumor's `RumorId`,
+    `RumorKind`, and `RumorTags` so apps switch on kind the same way
+    they do for `UnwrappedDirectMessage` in the NIP-17 receive path.
+    The `e` tag on a reaction / deletion references `RumorId` (the
+    canonical NIP-01 hash of the unsigned inner payload — stable
+    across senders), NOT the outer kind-445 `EventId` which differs
+    per-sender. Library cannot enforce NIP-09 sender-equals-target-
+    author; apps validate against their local message log. Fallback
+    when the plaintext isn't a parseable Marmot rumor: `RumorId =
+    outer EventId`, `RumorKind = ChatMessageRumorKind`, empty tags
+    — degraded but never null/crash.
 
 ## NIPs implemented
 
@@ -253,8 +269,11 @@ Group ops the provider implements (all RFC-9420 wire-compliant):
 | create + start N-party | `CreateGroupAsync` + `AddMembersAsync` (N kp) | `StartGroupAsync` |
 | add peer to existing group | `AddMembersAsync` | `AddPeerAsync` |
 | accept invite | `JoinGroupFromWelcomeAsync` | `TryAcceptInviteAsync` |
-| send | `EncryptApplicationMessageAsync` | `EncryptMessageAsync` (wraps text in kind-9 rumor) |
-| receive (richer) | `ProcessIncomingMlsMessageAsync` | `TryProcessMessageAsync` (unwraps rumor) |
+| send chat | `EncryptApplicationMessageAsync` | `EncryptMessageAsync` (wraps text in kind-9 rumor) |
+| send arbitrary rumor | `EncryptApplicationMessageAsync` | `EncryptRumorAsync` (kind-9 / 7 / 5 / etc.) |
+| send reaction (NIP-25) | — | `NostrMarmotClient.SendReactionAsync` |
+| send deletion (NIP-09) | — | `NostrMarmotClient.SendDeletionAsync` |
+| receive (richer) | `ProcessIncomingMlsMessageAsync` | `TryProcessMessageAsync` (unwraps rumor + rumor id/kind/tags) |
 | receive (plaintext-only) | (combines above) | `TryDecryptMessageAsync` |
 | remove peer | `RemoveMembersAsync` | `RemovePeerAsync` |
 | rotate own keys | `SelfUpdateAsync` | `RotateKeysAsync` |
@@ -388,12 +407,19 @@ deviates from "obvious" and breaks silently if you get it wrong:
 - **kind-444 (Welcome rumor)** wire is an `MLSMessage(Welcome)` —
   this IS wrapped, unlike kind-30443. Content is base64.
 - **kind-445 application payload** decrypts to a JSON-serialized
-  **unsigned Nostr rumor** with `kind: 9` (Marmot chat message,
-  per MIP-03 / NIP-C7). The chat content is the rumor's `.content`
-  field. `MarmotChat.EncryptMessageAsync(..., senderKey, text)`
-  builds the rumor via `SerializeChatRumor`; the receive path
-  unwraps via `ExtractChatRumor` and falls back to raw UTF-8 for
-  non-rumor payloads.
+  **unsigned Nostr rumor**. Per MIP-03 / NIP-C7 chat messages are
+  `kind: 9`; NostrNet additionally allows `kind: 7` (NIP-25 reactions)
+  and `kind: 5` (NIP-09 deletion requests) as inner rumor kinds,
+  surfaced via `MarmotMessageReceived.RumorKind`. The chat / reaction
+  / reason content is the rumor's `.content` field;
+  `MarmotMessageReceived.RumorTags` carries the inner tags (`e`/`k` for
+  reactions and deletions). `MarmotChat.EncryptMessageAsync(..., senderKey, text)`
+  builds the chat rumor via `SerializeChatRumor`;
+  `MarmotChat.{BuildReactionRumor,BuildDeletionRumor}` produce kind-7/5
+  rumors and `EncryptRumorAsync` is the shared encrypt-arbitrary-rumor
+  path. The receive path parses via `TryParseRumor` (richer than the
+  legacy `ExtractChatRumor`) and falls back to raw UTF-8 +
+  `RumorId = outer EventId` for non-rumor payloads.
 - **`MarmotInviteReceived.Sender` is the NIP-59 seal pubkey, NOT
   guaranteed to be the inviter's identity.** NIP-59 says the seal
   SHOULD be signed by the sender's identity key, but some Marmot

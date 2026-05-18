@@ -140,6 +140,9 @@ public class MemoryMarmotMessageLogTests
         return new MarmotMessageReceived(
             Conversation: conv,
             EventId: eventId,
+            RumorId: eventId,
+            RumorKind: MarmotChat.ChatMessageRumorKind,
+            RumorTags: Array.Empty<IReadOnlyList<string>>(),
             Sender: null,
             Plaintext: text,
             ServerTimestamp: DateTimeOffset.FromUnixTimeSeconds(sec));

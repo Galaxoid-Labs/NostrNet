@@ -709,9 +709,82 @@ No app-side echo, no synthetic-id plumbing. `msg.EventId` matches the
 real kind-445 event id on the wire, so persistence keyed on event id
 stays consistent across own/peer messages and across sessions.
 
-The plaintext fed to MLS is a JSON-serialized unsigned Nostr kind-9
-rumor; the receive path unwraps it transparently before exposing
-`Plaintext`.
+The plaintext fed to MLS is a JSON-serialized unsigned Nostr rumor
+(kind 9 chat / 7 reaction / 5 deletion); the receive path unwraps it
+transparently before exposing `Plaintext`.
+
+### Inner rumor on `MarmotMessageReceived`
+
+Every `MarmotMessageReceived` also surfaces the inner Marmot rumor —
+the same way `UnwrappedDirectMessage` exposes the inner rumor on NIP-17:
+
+| Field | Meaning |
+|---|---|
+| `EventId` | Outer kind-445 id (dedup key). |
+| `RumorId` | Inner rumor id — **stable across senders**, what reactions/deletions reference. |
+| `RumorKind` | `9` chat / `7` reaction / `5` deletion. |
+| `RumorTags` | Inner rumor tags (e/k references). |
+| `Plaintext` | Chat body / reaction text / deletion reason. |
+
+Switch on `RumorKind` the same way you switch on `UnwrappedDirectMessage.Kind`.
+
+### Reactions and deletions (NIP-25 / NIP-09 over Marmot)
+
+Travel inside the MLS application channel — same dual-pipeline pattern
+as the NIP-17 wraps, with own-send echo built in:
+
+```csharp
+// React to a message. targetRumorId is msg.RumorId, NOT msg.EventId.
+await marmot.SendReactionAsync(
+    conversation: convo,
+    targetRumorId: msg.RumorId,
+    reaction: "👍");
+
+// Delete one of your own messages (or a reaction). k tag declares
+// the kind being deleted so receivers route without the original
+// rumor in scope.
+await marmot.SendDeletionAsync(
+    conversation: convo,
+    targetRumorId: msg.RumorId,
+    targetKind: MarmotChat.ChatMessageRumorKind,   // 9 chat / 7 reaction
+    reason: "typo");                                // optional
+```
+
+Receive side switches on `RumorKind`:
+
+```csharp
+case MarmotMessageReceived msg:
+    switch (msg.RumorKind)
+    {
+        case MarmotChat.ChatMessageRumorKind:           // 9
+            RenderChat(msg);
+            break;
+        case MarmotChat.ReactionRumorKind:              // 7
+            string? target = msg.RumorTags
+                .FirstOrDefault(t => t.Count >= 2 && t[0] == "e")?[1];
+            if (target is not null)
+                RenderReaction(target, msg.Plaintext, msg.Sender);
+            break;
+        case MarmotChat.DeletionRumorKind:              // 5
+            string? deletedId = msg.RumorTags
+                .FirstOrDefault(t => t.Count >= 2 && t[0] == "e")?[1];
+            // NIP-09 is advisory — only honor when msg.Sender authored
+            // the targeted rumor (look it up in your local message log).
+            if (deletedId is not null && IsAuthorOf(deletedId, msg.Sender))
+                ApplyDeletion(deletedId);
+            break;
+    }
+    break;
+```
+
+**The e-tag MUST point at `RumorId`, not `EventId`.** Outer kind-445 ids
+differ per sender (different ephemeral key / `created_at`); only the
+inner rumor id is stable across the conversation. A reaction keyed on
+outer id wouldn't match across participants.
+
+NIP-09 validation (deletion's sender authored the target) is the app's
+responsibility — the library can't enforce it because the original
+event isn't in scope at receive time.
 
 ### Add / remove / rotate
 

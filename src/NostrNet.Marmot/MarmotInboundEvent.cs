@@ -60,6 +60,27 @@ public sealed record MarmotInviteReceived(
 /// message arrives from multiple relays or when persisting to an
 /// <see cref="IMarmotMessageLog"/>.
 /// </param>
+/// <param name="RumorId">
+/// The <strong>inner Marmot rumor id</strong> — derived from the canonical
+/// NIP-01 hash of the unsigned JSON payload that was MLS-encrypted. This
+/// is the stable, sender-agnostic identifier for the logical message
+/// and is what reactions / deletions should reference via their
+/// <c>e</c> tag (NOT the outer <see cref="EventId"/>, which would vary
+/// across senders republishing the same content).
+/// </param>
+/// <param name="RumorKind">
+/// The inner Nostr kind: <c>9</c> for chat messages
+/// (<see cref="MarmotChat.ChatMessageRumorKind"/>), <c>7</c> for reactions
+/// (<see cref="MarmotChat.ReactionRumorKind"/>), <c>5</c> for NIP-09
+/// deletion requests (<see cref="MarmotChat.DeletionRumorKind"/>). Apps
+/// switch on this to route chat vs. reaction vs. deletion.
+/// </param>
+/// <param name="RumorTags">
+/// The inner rumor's tags. For reactions: <c>["e", targetRumorId]</c>
+/// and optionally <c>["p", targetAuthor]</c>. For deletions:
+/// <c>["e", targetRumorId]</c> and <c>["k", targetKind]</c>. For chat
+/// messages: typically empty.
+/// </param>
 /// <param name="Sender">
 /// <strong>May be null</strong> when the MLS layer can't resolve the leaf
 /// to a Nostr pubkey. When non-null, this is the cryptographically
@@ -68,11 +89,27 @@ public sealed record MarmotInviteReceived(
 /// malicious outer wrap. Apps should null-check before using; treating
 /// null as "unknown sender" is the safe rendering.
 /// </param>
-/// <param name="Plaintext">The decrypted UTF-8 plaintext.</param>
+/// <param name="Plaintext">
+/// The decrypted text body. For chat messages this is the human-readable
+/// content; for reactions it's the emoji / NIP-25 token; for deletion
+/// requests it's the optional reason string (empty when none was given).
+/// </param>
 /// <param name="ServerTimestamp">The kind-445 event's <c>created_at</c>.</param>
+/// <remarks>
+/// <para>
+/// NIP-09 deletion validation is the consumer's responsibility — apps
+/// only honor a kind-5 rumor when <see cref="Sender"/> matches the
+/// author of the targeted rumor (looked up in the local message log /
+/// store). The library can't enforce this since the original event
+/// isn't in scope.
+/// </para>
+/// </remarks>
 public sealed record MarmotMessageReceived(
     MarmotConversation Conversation,
     EventId EventId,
+    EventId RumorId,
+    int RumorKind,
+    IReadOnlyList<IReadOnlyList<string>> RumorTags,
     PublicKey? Sender,
     string Plaintext,
     DateTimeOffset ServerTimestamp) : MarmotInboundEvent;

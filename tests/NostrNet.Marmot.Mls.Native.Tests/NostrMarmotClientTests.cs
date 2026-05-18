@@ -667,6 +667,278 @@ public class NostrMarmotClientTests
     }
 
     [Fact]
+    public async Task SendAsync_RumorIdIsStableAcrossSenders()
+    {
+        // The inner Marmot rumor id is derived from the unsigned JSON
+        // payload that goes into the MLS ratchet — sender + created_at +
+        // kind + tags + content — and is independent of which leaf
+        // produced the kind-445 envelope. Alice's own MarmotMessageReceived
+        // and Bob's MarmotMessageReceived must therefore see the SAME
+        // RumorId for the message Alice sent. SeerChat-style reaction /
+        // deletion UI relies on this — both sides have to be able to
+        // key on the same identifier.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "rumor-id-stability");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "hello");
+
+        var aliceOwn = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        var bobReceived = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        Assert.Equal(aliceOwn.RumorId, bobReceived.RumorId);
+        Assert.Equal(MarmotChat.ChatMessageRumorKind, aliceOwn.RumorKind);
+        Assert.Equal(MarmotChat.ChatMessageRumorKind, bobReceived.RumorKind);
+        Assert.Equal("hello", aliceOwn.Plaintext);
+        Assert.Equal("hello", bobReceived.Plaintext);
+    }
+
+    [Fact]
+    public async Task SendReactionAsync_TargetsInnerRumorId_AndRoundTrips()
+    {
+        // Reaction round-trip: bob reacts to alice's message; alice sees
+        // a kind-7 rumor whose e-tag points at the INNER rumor id she
+        // observed (RumorId), not the outer kind-445 event id (EventId).
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "reaction-test");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        var bobConvo = await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "hi");
+
+        // Drain own-send + peer-recv to find bob's view of the chat.
+        var aliceOwnChat = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        var bobChat = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+        Assert.Equal(aliceOwnChat.RumorId, bobChat.RumorId);
+
+        await bob.SendReactionAsync(bobConvo!, bobChat.RumorId, "👍");
+
+        // Alice sees the reaction with the right kind, e-tag, and sender.
+        MarmotMessageReceived? reactionAtAlice = null;
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        {
+            await foreach (var ev in aliceInbound.WithCancellation(deadline.Token))
+            {
+                if (ev is MarmotMessageReceived m && m.RumorKind == MarmotChat.ReactionRumorKind)
+                {
+                    reactionAtAlice = m;
+                    break;
+                }
+            }
+        }
+
+        Assert.NotNull(reactionAtAlice);
+        Assert.Equal("👍", reactionAtAlice!.Plaintext);
+        Assert.Equal(bobKey.PublicKey, reactionAtAlice.Sender);
+        var eTag = reactionAtAlice.RumorTags.FirstOrDefault(t => t.Count >= 2 && t[0] == "e");
+        Assert.NotNull(eTag);
+        Assert.Equal(aliceOwnChat.RumorId.ToHex(), eTag![1]);
+    }
+
+    [Fact]
+    public async Task SendReactionAsync_OwnSendEchoesOnSenderStream()
+    {
+        // Own-send synthetic emission must apply to reactions too —
+        // MLS ratchet asymmetry doesn't care which rumor kind is
+        // riding inside the application message.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "own-reaction-echo");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "msg");
+        var aliceOwnChat = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        _ = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        await alice.SendReactionAsync(aliceConvo, aliceOwnChat.RumorId, "+");
+
+        // Alice should see her own reaction on her own stream — the
+        // ratchet can't decrypt it via the receive pump, the library
+        // emits it directly.
+        MarmotMessageReceived? own = null;
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        {
+            await foreach (var ev in aliceInbound.WithCancellation(deadline.Token))
+            {
+                if (ev is MarmotMessageReceived m && m.RumorKind == MarmotChat.ReactionRumorKind)
+                {
+                    own = m;
+                    break;
+                }
+            }
+        }
+
+        Assert.NotNull(own);
+        Assert.Equal("+", own!.Plaintext);
+        Assert.Equal(aliceKey.PublicKey, own.Sender);
+    }
+
+    [Fact]
+    public async Task SendDeletionAsync_TargetsInnerRumorId_AndRoundTrips()
+    {
+        // Deletion round-trip: alice deletes her own message; both
+        // alice (via own-send echo) and bob (via MLS decrypt) see a
+        // kind-5 rumor with e-tag pointing at the inner rumor id and
+        // k-tag declaring the deleted kind (9 for chat).
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "deletion-test");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "typo");
+        var aliceOwnChat = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        var bobChat = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        await alice.SendDeletionAsync(
+            aliceConvo,
+            aliceOwnChat.RumorId,
+            MarmotChat.ChatMessageRumorKind,
+            "typo");
+
+        MarmotMessageReceived? aliceOwnDel = null;
+        MarmotMessageReceived? bobDel = null;
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        {
+            await foreach (var ev in aliceInbound.WithCancellation(deadline.Token))
+            {
+                if (ev is MarmotMessageReceived m && m.RumorKind == MarmotChat.DeletionRumorKind)
+                {
+                    aliceOwnDel = m;
+                    break;
+                }
+            }
+        }
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        {
+            await foreach (var ev in bobInbound.WithCancellation(deadline.Token))
+            {
+                if (ev is MarmotMessageReceived m && m.RumorKind == MarmotChat.DeletionRumorKind)
+                {
+                    bobDel = m;
+                    break;
+                }
+            }
+        }
+
+        Assert.NotNull(aliceOwnDel);
+        Assert.NotNull(bobDel);
+
+        // Both sides see the same inner rumor id for the deletion request itself.
+        Assert.Equal(aliceOwnDel!.RumorId, bobDel!.RumorId);
+
+        // Sender attribution is alice.
+        Assert.Equal(aliceKey.PublicKey, aliceOwnDel.Sender);
+        Assert.Equal(aliceKey.PublicKey, bobDel.Sender);
+
+        // e-tag references the chat rumor id; k-tag carries kind 9.
+        foreach (var del in new[] { aliceOwnDel, bobDel })
+        {
+            var eTag = del.RumorTags.FirstOrDefault(t => t.Count >= 2 && t[0] == "e");
+            var kTag = del.RumorTags.FirstOrDefault(t => t.Count >= 2 && t[0] == "k");
+            Assert.NotNull(eTag);
+            Assert.NotNull(kTag);
+            Assert.Equal(aliceOwnChat.RumorId.ToHex(), eTag![1]);
+            Assert.Equal(MarmotChat.ChatMessageRumorKind.ToString(System.Globalization.CultureInfo.InvariantCulture), kTag![1]);
+        }
+
+        // Reason is surfaced as Plaintext.
+        Assert.Equal("typo", aliceOwnDel.Plaintext);
+        Assert.Equal("typo", bobDel.Plaintext);
+    }
+
+    [Fact]
+    public async Task SendDeletionAsync_NullReason_YieldsEmptyPlaintext()
+    {
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "deletion-no-reason");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "x");
+        var chat = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        _ = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        await alice.SendDeletionAsync(aliceConvo, chat.RumorId, MarmotChat.ChatMessageRumorKind);
+
+        MarmotMessageReceived? del = null;
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        {
+            await foreach (var ev in aliceInbound.WithCancellation(deadline.Token))
+            {
+                if (ev is MarmotMessageReceived m && m.RumorKind == MarmotChat.DeletionRumorKind)
+                {
+                    del = m;
+                    break;
+                }
+            }
+        }
+
+        Assert.NotNull(del);
+        Assert.Equal(string.Empty, del!.Plaintext);
+    }
+
+    [Fact]
     public async Task AddPeerAsync_SurfacesOwnCommitThroughCallerSubscribeAsync()
     {
         // Same shape as the preview15 SendAsync own-send fix: MLS won't
