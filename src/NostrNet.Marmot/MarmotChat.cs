@@ -585,6 +585,82 @@ public static class MarmotChat
     }
 
     /// <summary>
+    /// Builds an unsigned chat-message rumor (kind 9) optionally tagged
+    /// with NIP-10 reply markers. Use this when you want to pre-compute
+    /// the rumor id (via <see cref="UnsignedEvent.ComputeId"/>) before
+    /// invoking <see cref="NostrMarmotClient.SendAsync"/> or
+    /// <see cref="EncryptRumorAsync"/> — for example to write an
+    /// optimistic UI row keyed on the rumor id before the encrypt +
+    /// publish round-trip completes.
+    /// </summary>
+    /// <param name="text">The plaintext chat body.</param>
+    /// <param name="author">The sender's identity pubkey (also the rumor's <c>pubkey</c>).</param>
+    /// <param name="replyTo">
+    /// Inner rumor id of the message being replied to. Emitted as a
+    /// NIP-10 reply marker tag <c>["e", id, "", "reply"]</c>. Pass
+    /// <c>null</c> when this isn't a reply.
+    /// </param>
+    /// <param name="replyRoot">
+    /// Inner rumor id of the thread root. Emitted as a NIP-10 root
+    /// marker tag <c>["e", id, "", "root"]</c>. Omit when the parent
+    /// IS the root (NIP-10 says clients should distinguish the two but
+    /// the root marker isn't strictly required for a depth-2 thread).
+    /// </param>
+    /// <param name="additionalTags">
+    /// Extra tags appended AFTER the auto-built reply/root markers —
+    /// caller-supplied mentions, NIP-40 expiration, etc. The marker
+    /// positioning is preserved so NIP-10-aware consumers can find
+    /// the markers at predictable offsets.
+    /// </param>
+    /// <param name="createdAt">Optional real timestamp; defaults to now.</param>
+    public static UnsignedEvent BuildChatRumor(
+        string text,
+        PublicKey author,
+        EventId? replyTo = null,
+        EventId? replyRoot = null,
+        IReadOnlyList<IReadOnlyList<string>>? additionalTags = null,
+        DateTimeOffset? createdAt = null)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(author);
+
+        IReadOnlyList<IReadOnlyList<string>> tags;
+        if (replyTo is null && replyRoot is null && (additionalTags is null || additionalTags.Count == 0))
+        {
+            tags = Array.Empty<IReadOnlyList<string>>();
+        }
+        else
+        {
+            var list = new List<IReadOnlyList<string>>();
+            if (replyTo is not null)
+            {
+                list.Add(new[] { "e", replyTo.ToHex(), string.Empty, "reply" });
+            }
+            if (replyRoot is not null)
+            {
+                list.Add(new[] { "e", replyRoot.ToHex(), string.Empty, "root" });
+            }
+            if (additionalTags is not null)
+            {
+                foreach (var t in additionalTags)
+                {
+                    list.Add(t);
+                }
+            }
+            tags = list;
+        }
+
+        return new UnsignedEvent
+        {
+            PubKey = author,
+            CreatedAt = (createdAt ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds(),
+            Kind = ChatMessageRumorKind,
+            Tags = tags,
+            Content = text,
+        };
+    }
+
+    /// <summary>
     /// Builds an unsigned reaction rumor (kind 7) targeting
     /// <paramref name="targetRumorId"/>. Use this when you want to
     /// pre-compute the rumor id before invoking

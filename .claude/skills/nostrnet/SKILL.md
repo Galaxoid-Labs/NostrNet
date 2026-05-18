@@ -713,6 +713,40 @@ The plaintext fed to MLS is a JSON-serialized unsigned Nostr rumor
 (kind 9 chat / 7 reaction / 5 deletion); the receive path unwraps it
 transparently before exposing `Plaintext`.
 
+### Replies (NIP-10 markers, inside the wrap)
+
+`SendAsync` accepts optional `replyTo` and `replyRoot` referencing
+the **inner rumor id** (`msg.RumorId`, NOT `msg.EventId`):
+
+```csharp
+await marmot.SendAsync(
+    convo,
+    "yes!",
+    replyTo: parent.RumorId);                  // → ["e", id, "", "reply"]
+
+// Deeper threads also pass the root:
+await marmot.SendAsync(
+    convo, "deeper",
+    replyTo: parent.RumorId,
+    replyRoot: thread.RumorId);                // → adds ["e", id, "", "root"]
+```
+
+Markers live on the inner kind-9 rumor and surface on
+`msg.RumorTags` for both the sender (via own-send echo) and peers.
+`additionalTags` (e.g. mentions) append after the auto-built markers
+so NIP-10 consumers find `reply` / `root` at predictable offsets.
+
+To pre-compute the rumor id for optimistic UI writes:
+
+```csharp
+UnsignedEvent rumor = MarmotChat.BuildChatRumor(
+    "yes!", marmot.Identity, replyTo: parent.RumorId);
+EventId predictedId = rumor.ComputeId();      // matches what peers will see
+```
+
+Reactions and deletions don't take reply markers — their `e` tag is
+already the action target.
+
 ### Inner rumor on `MarmotMessageReceived`
 
 Every `MarmotMessageReceived` also surfaces the inner Marmot rumor —

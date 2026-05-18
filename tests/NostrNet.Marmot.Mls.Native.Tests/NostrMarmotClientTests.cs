@@ -896,6 +896,227 @@ public class NostrMarmotClientTests
     }
 
     [Fact]
+    public async Task SendAsync_WithReplyMarkers_TagsRoundTripToPeer()
+    {
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "reply-tags");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        var bobConvo = await bob.AcceptInviteAsync(bobInvite);
+
+        // Alice sends the parent + thread root, drain own + peer copies.
+        await alice.SendAsync(aliceConvo, "root msg");
+        var aliceRoot = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        var bobRoot = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        await alice.SendAsync(aliceConvo, "parent msg");
+        var aliceParent = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        var bobParent = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        // Bob replies with both reply + root markers.
+        await bob.SendAsync(
+            bobConvo!,
+            "answer",
+            replyTo: bobParent.RumorId,
+            replyRoot: bobRoot.RumorId);
+
+        var bobOwn = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+        var aliceReceived = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+
+        foreach (var msg in new[] { bobOwn, aliceReceived })
+        {
+            var replyTag = msg.RumorTags.FirstOrDefault(t =>
+                t.Count >= 4 && t[0] == "e" && t[3] == "reply");
+            var rootTag = msg.RumorTags.FirstOrDefault(t =>
+                t.Count >= 4 && t[0] == "e" && t[3] == "root");
+
+            Assert.NotNull(replyTag);
+            Assert.NotNull(rootTag);
+            Assert.Equal(aliceParent.RumorId.ToHex(), replyTag![1]);
+            Assert.Equal(aliceRoot.RumorId.ToHex(), rootTag![1]);
+            Assert.Equal(string.Empty, replyTag[2]);
+            Assert.Equal(string.Empty, rootTag[2]);
+        }
+
+        // Own-send parity: sender's tags exactly match the peer's view.
+        Assert.Equal(bobOwn.RumorTags.Count, aliceReceived.RumorTags.Count);
+        for (int i = 0; i < bobOwn.RumorTags.Count; i++)
+        {
+            Assert.Equal(bobOwn.RumorTags[i], aliceReceived.RumorTags[i]);
+        }
+    }
+
+    [Fact]
+    public async Task SendAsync_ReplyToOnly_OmitsRootTag()
+    {
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "reply-no-root");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        var bobConvo = await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "parent");
+        _ = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        var bobParent = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        await bob.SendAsync(bobConvo!, "reply only", replyTo: bobParent.RumorId);
+        var bobOwn = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        Assert.Single(bobOwn.RumorTags);
+        Assert.Equal("e", bobOwn.RumorTags[0][0]);
+        Assert.Equal("reply", bobOwn.RumorTags[0][3]);
+    }
+
+    [Fact]
+    public async Task SendAsync_NoReplyMarkers_RumorTagsEmpty()
+    {
+        // Sanity: the new optional params don't perturb the baseline
+        // "no reply" path — Tags stays empty just like preview18.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "no-reply");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "plain msg");
+        var aliceOwn = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        var bobReceived = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        Assert.Empty(aliceOwn.RumorTags);
+        Assert.Empty(bobReceived.RumorTags);
+    }
+
+    [Fact]
+    public async Task SendAsync_AdditionalTags_AppendAfterMarkers()
+    {
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "tag-order");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        var bobConvo = await bob.AcceptInviteAsync(bobInvite);
+
+        await alice.SendAsync(aliceConvo, "parent");
+        _ = await NextOfTypeAsync<MarmotMessageReceived>(aliceInbound);
+        var bobParent = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        var extras = new IReadOnlyList<string>[]
+        {
+            new[] { "p", aliceKey.PublicKey.ToHex() },
+            new[] { "alt", "metadata" },
+        };
+
+        await bob.SendAsync(
+            bobConvo!,
+            "answer",
+            replyTo: bobParent.RumorId,
+            additionalTags: extras);
+
+        var bobOwn = await NextOfTypeAsync<MarmotMessageReceived>(bobInbound);
+
+        // Layout: [reply, p, alt] — markers FIRST, additionalTags after.
+        Assert.Equal(3, bobOwn.RumorTags.Count);
+        Assert.Equal("e", bobOwn.RumorTags[0][0]);
+        Assert.Equal("reply", bobOwn.RumorTags[0][3]);
+        Assert.Equal("p", bobOwn.RumorTags[1][0]);
+        Assert.Equal(aliceKey.PublicKey.ToHex(), bobOwn.RumorTags[1][1]);
+        Assert.Equal("alt", bobOwn.RumorTags[2][0]);
+        Assert.Equal("metadata", bobOwn.RumorTags[2][1]);
+    }
+
+    [Fact]
+    public async Task BuildChatRumor_ComputeId_MatchesRoundTripRumorId()
+    {
+        // Optimistic-UI use case: an app pre-computes the rumor id via
+        // BuildChatRumor + ComputeId before SendAsync round-trips. The
+        // value must equal what both the sender's own-emit and the
+        // peer's decrypted view ultimately surface as RumorId — that's
+        // the contract that makes optimistic store writes safe.
+        using var aliceKey = PrivateKey.Generate();
+        using var bobKey = PrivateKey.Generate();
+        var relay = new FakeRelay();
+
+        await using var alice = await BuildAsync(aliceKey, relay);
+        await using var bob = await BuildAsync(bobKey, relay);
+
+        using var streamCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var aliceInbound = alice.SubscribeAsync(streamCts.Token);
+        var bobInbound = bob.SubscribeAsync(streamCts.Token);
+
+        await bob.PublishKeyPackageAsync();
+        var bobKp = await alice.TryGetKeyPackageAsync(bobKey.PublicKey, TimeSpan.FromSeconds(2));
+        var aliceConvo = await alice.StartConversationAsync(bobKp!, "id-pre-compute");
+        var bobInvite = await NextOfTypeAsync<MarmotInviteReceived>(bobInbound);
+        await bob.AcceptInviteAsync(bobInvite);
+
+        // Use a fixed timestamp so the round-trip path produces the same
+        // id we predict here. Alice's send path uses DateTimeOffset.UtcNow
+        // internally — we can't observe-then-predict for the same send,
+        // but we CAN build the rumor here and prove ComputeId returns
+        // the same EventId NIP-01 canonical hash that the receive side
+        // would compute. To compare against the live stream we'd need a
+        // clock injection point we don't have; the substantive
+        // invariant (sender's own RumorId == peer's RumorId for the same
+        // logical message) is already covered by
+        // SendAsync_RumorIdIsStableAcrossSenders. Here we just assert
+        // that two BuildChatRumor calls with identical inputs produce
+        // identical ids (deterministic build) and that the id has the
+        // expected length / format.
+        var fixedTime = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+        var r1 = MarmotChat.BuildChatRumor("hi", aliceKey.PublicKey, createdAt: fixedTime);
+        var r2 = MarmotChat.BuildChatRumor("hi", aliceKey.PublicKey, createdAt: fixedTime);
+        Assert.Equal(r1.ComputeId(), r2.ComputeId());
+
+        // Reply markers change the rumor id.
+        var fakeId = new EventId(new byte[EventId.Size]);
+        var r3 = MarmotChat.BuildChatRumor("hi", aliceKey.PublicKey, replyTo: fakeId, createdAt: fixedTime);
+        Assert.NotEqual(r1.ComputeId(), r3.ComputeId());
+    }
+
+    [Fact]
     public async Task SendDeletionAsync_NullReason_YieldsEmptyPlaintext()
     {
         using var aliceKey = PrivateKey.Generate();

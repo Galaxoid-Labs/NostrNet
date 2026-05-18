@@ -201,7 +201,7 @@ this — only the Native package pulls Rust in.
 | 04 | legacy DM **decode only** (no encrypt method by design — spec obsolete) | Crypto/Nip04.cs |
 | 05 | DNS-based identifier verification | Relay |
 | 09 | event deletion requests (kind 5) with Targets() rule | Core/Deletions/ |
-| 10 | thread/reply tagging (marker + legacy positional) | Core/Threading/ |
+| 10 | thread/reply tagging (marker + legacy positional); also surfaced through NIP-17 and Marmot send helpers | Core/Threading/ |
 | 11 | relay info document | Relay |
 | 13 | proof of work | Core/Events/ProofOfWork.cs |
 | 17 | private DMs (over NIP-59), including NIP-09 deletion as a wrapped kind-5 rumor | Crypto/Nip17.cs |
@@ -270,6 +270,7 @@ Group ops the provider implements (all RFC-9420 wire-compliant):
 | add peer to existing group | `AddMembersAsync` | `AddPeerAsync` |
 | accept invite | `JoinGroupFromWelcomeAsync` | `TryAcceptInviteAsync` |
 | send chat | `EncryptApplicationMessageAsync` | `EncryptMessageAsync` (wraps text in kind-9 rumor) |
+| build chat rumor (with optional NIP-10 reply markers) | — | `BuildChatRumor` |
 | send arbitrary rumor | `EncryptApplicationMessageAsync` | `EncryptRumorAsync` (kind-9 / 7 / 5 / etc.) |
 | send reaction (NIP-25) | — | `NostrMarmotClient.SendReactionAsync` |
 | send deletion (NIP-09) | — | `NostrMarmotClient.SendDeletionAsync` |
@@ -413,13 +414,18 @@ deviates from "obvious" and breaks silently if you get it wrong:
   surfaced via `MarmotMessageReceived.RumorKind`. The chat / reaction
   / reason content is the rumor's `.content` field;
   `MarmotMessageReceived.RumorTags` carries the inner tags (`e`/`k` for
-  reactions and deletions). `MarmotChat.EncryptMessageAsync(..., senderKey, text)`
-  builds the chat rumor via `SerializeChatRumor`;
-  `MarmotChat.{BuildReactionRumor,BuildDeletionRumor}` produce kind-7/5
-  rumors and `EncryptRumorAsync` is the shared encrypt-arbitrary-rumor
-  path. The receive path parses via `TryParseRumor` (richer than the
-  legacy `ExtractChatRumor`) and falls back to raw UTF-8 +
-  `RumorId = outer EventId` for non-rumor payloads.
+  reactions and deletions; NIP-10 `["e", id, "", "reply"]` /
+  `["e", id, "", "root"]` for threaded chat replies — markers always
+  reference the *inner* rumor id, never the outer kind-445 id).
+  `MarmotChat.EncryptMessageAsync(..., senderKey, text)` builds the
+  chat rumor via `SerializeChatRumor`;
+  `MarmotChat.{BuildChatRumor,BuildReactionRumor,BuildDeletionRumor}`
+  produce kind-9/7/5 rumors (chat with optional reply markers /
+  reaction / deletion) and `EncryptRumorAsync` is the shared
+  encrypt-arbitrary-rumor path. The receive path parses via
+  `TryParseRumor` (richer than the legacy `ExtractChatRumor`) and
+  falls back to raw UTF-8 + `RumorId = outer EventId` for non-rumor
+  payloads.
 - **`MarmotInviteReceived.Sender` is the NIP-59 seal pubkey, NOT
   guaranteed to be the inviter's identity.** NIP-59 says the seal
   SHOULD be signed by the sender's identity key, but some Marmot

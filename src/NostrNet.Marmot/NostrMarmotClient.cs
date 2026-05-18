@@ -497,14 +497,34 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sends a UTF-8 text message in <paramref name="conversation"/>.
-    /// Encrypts via the MLS application ratchet, wraps in a kind-445
-    /// GroupEvent, publishes, and surfaces the own send through the
-    /// same channels (<see cref="SubscribeAsync"/> + the configured
+    /// Sends a UTF-8 text message in <paramref name="conversation"/>,
+    /// optionally tagged with NIP-10 reply markers. Encrypts via the
+    /// MLS application ratchet, wraps in a kind-445 GroupEvent,
+    /// publishes, and surfaces the own send through the same channels
+    /// (<see cref="SubscribeAsync"/> + the configured
     /// <see cref="IMarmotMessageLog"/>) that inbound messages flow
     /// through. Returns the published kind-445 event so callers can
     /// correlate by event id.
     /// </summary>
+    /// <param name="conversation">The conversation to send in.</param>
+    /// <param name="text">The plaintext chat body.</param>
+    /// <param name="replyTo">
+    /// Inner rumor id of the message being replied to. Emitted as a
+    /// NIP-10 reply marker on the inner kind-9 rumor — surfaces on
+    /// <see cref="MarmotMessageReceived.RumorTags"/> as
+    /// <c>["e", id, "", "reply"]</c> for both sender (own-send) and
+    /// peers.
+    /// </param>
+    /// <param name="replyRoot">
+    /// Inner rumor id of the thread root. Emitted as
+    /// <c>["e", id, "", "root"]</c>. Omit when the parent IS the
+    /// root.
+    /// </param>
+    /// <param name="additionalTags">
+    /// Extra tags appended after the auto-built reply/root markers
+    /// (mentions, NIP-40 expiration, etc.).
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
     /// <remarks>
     /// <para>
     /// Apps render their own messages and peer messages through the
@@ -528,25 +548,27 @@ public sealed partial class NostrMarmotClient : IAsyncDisposable
     public async Task<NostrEvent> SendAsync(
         MarmotConversation conversation,
         string text,
+        EventId? replyTo = null,
+        EventId? replyRoot = null,
+        IReadOnlyList<IReadOnlyList<string>>? additionalTags = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(conversation);
         ArgumentNullException.ThrowIfNull(text);
         EnsureNotDisposed();
 
-        // Build the rumor explicitly so we can echo the same RumorId on
-        // the synthetic own-send. The receive-side ratchet can't decrypt
-        // our own ciphertext, so without echoing the rumor id apps would
-        // see a different stable id for the message they themselves sent
-        // versus what peers see.
-        var rumor = new UnsignedEvent
-        {
-            PubKey = _identityKey.PublicKey,
-            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            Kind = MarmotChat.ChatMessageRumorKind,
-            Tags = Array.Empty<IReadOnlyList<string>>(),
-            Content = text,
-        };
+        // Build the rumor through MarmotChat so the synthetic own-send
+        // emission below uses identical Tags + RumorId to what peers
+        // will see after MLS decrypt. Without sharing the build path,
+        // any reply markers would surface only to peers and the sender
+        // would see a tag-stripped echo — silently breaking inline
+        // reply previews on the sender's own client.
+        var rumor = MarmotChat.BuildChatRumor(
+            text,
+            _identityKey.PublicKey,
+            replyTo,
+            replyRoot,
+            additionalTags);
         EventId rumorId = rumor.ComputeId();
 
         var ev = await MarmotChat.EncryptRumorAsync(_provider, conversation, rumor, ct).ConfigureAwait(false);

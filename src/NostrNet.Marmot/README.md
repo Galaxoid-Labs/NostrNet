@@ -542,6 +542,60 @@ EventId predictedId = rumor.ComputeId();   // matches msg.RumorId on echo
 // ... low-level: MarmotChat.EncryptRumorAsync(provider, conv, rumor)
 ```
 
+### Threaded replies (NIP-10 markers, inside the MLS channel)
+
+`SendAsync` accepts optional `replyTo` and `replyRoot` parameters that
+attach NIP-10 marker tags to the inner kind-9 rumor:
+
+```csharp
+await marmot.SendAsync(
+    convo,
+    "yes!",
+    replyTo: parent.RumorId);                        // → ["e", id, "", "reply"]
+
+// Deeper threads — also pass the thread root:
+await marmot.SendAsync(
+    convo,
+    "deeper",
+    replyTo: parent.RumorId,
+    replyRoot: thread.RumorId);                      // → adds ["e", id, "", "root"]
+```
+
+The markers ride inside the MLS-encrypted rumor (NOT the outer
+kind-445), so they round-trip through MLS and surface on
+`MarmotMessageReceived.RumorTags` for both the sender (own-send echo)
+and peers. Reply ids point at the **inner Marmot rumor id**
+(`MarmotMessageReceived.RumorId`), the stable cross-sender identifier
+— never the outer kind-445 `EventId`.
+
+To pre-compute the rumor id (optimistic UI):
+
+```csharp
+UnsignedEvent rumor = MarmotChat.BuildChatRumor(
+    "yes!",
+    author: client.Identity,
+    replyTo: parent.RumorId);
+EventId predictedId = rumor.ComputeId();             // matches what peers will see
+```
+
+`additionalTags` slot in after the auto-built markers, so NIP-10-aware
+consumers can find `reply` / `root` at predictable offsets:
+
+```csharp
+await marmot.SendAsync(
+    convo, "with mention",
+    replyTo: parent.RumorId,
+    additionalTags: new IReadOnlyList<string>[]
+    {
+        new[] { "p", mentionedPubkey.ToHex() },
+    });
+```
+
+Reactions and deletions don't accept reply markers — their `e` tag is
+already load-bearing (the reaction / deletion target), and stacking
+NIP-10 markers on top would be ambiguous. Reply UX on reactions is
+not a defined NIP-10 use case.
+
 The kind-445 the sender publishes also comes back through the receive
 pump via relay broadcast. The pump tries to decrypt, fails (MLS won't
 decrypt own sends), parks the event, eventually evicts. Bounded memory

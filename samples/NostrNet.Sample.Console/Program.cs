@@ -940,7 +940,7 @@ async Task<int> MarmotChatAsync(string[] argv)
             {
                 try
                 {
-                    await client.SendAsync(sendTo, line, cts.Token).ConfigureAwait(false);
+                    await client.SendAsync(sendTo, line, ct: cts.Token).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
