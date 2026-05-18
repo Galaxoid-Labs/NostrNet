@@ -188,7 +188,7 @@ this — only the Native package pulls Rust in.
 | 10 | thread/reply tagging (marker + legacy positional) | Core/Threading/ |
 | 11 | relay info document | Relay |
 | 13 | proof of work | Core/Events/ProofOfWork.cs |
-| 17 | private DMs (over NIP-59) | Crypto/Nip17.cs |
+| 17 | private DMs (over NIP-59), including NIP-09 deletion as a wrapped kind-5 rumor | Crypto/Nip17.cs |
 | 18 | reposts (kinds 6 / 16) + quote-repost `q`-tag helper | Core/Reposts/ |
 | 19 | bech32 entities (npub/nsec/note/nprofile/nevent/naddr) | Core/Nip19/ |
 | 21 | `nostr:` URI scheme | Core/Nip19/Nip21.cs |

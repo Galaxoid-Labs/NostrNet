@@ -36,6 +36,9 @@ public static class Nip17
     /// <summary>The kind of a NIP-25 reaction rumor, when sent privately inside a NIP-17 wrap.</summary>
     public const int ReactionRumorKind = 7;
 
+    /// <summary>The kind of a NIP-09 deletion-request rumor, when sent privately inside a NIP-17 wrap.</summary>
+    public const int DeletionRumorKind = 5;
+
     /// <summary>The kind of a NIP-59 seal. Re-exported from <see cref="Nip59"/>.</summary>
     public const int SealKind = Nip59.SealKind;
 
@@ -44,12 +47,18 @@ public static class Nip17
 
     /// <summary>
     /// The set of rumor kinds that <see cref="Unwrap"/> accepts as
-    /// belonging to the NIP-17 DM family: chat (14), file (15), and
-    /// reactions (7). Other kinds wrapped in NIP-59 (e.g. Marmot
-    /// Welcomes, kind 444) are rejected so they don't leak into the DM
-    /// stream.
+    /// belonging to the NIP-17 DM family: chat (14), file (15),
+    /// reactions (7), and deletions (5). Other kinds wrapped in NIP-59
+    /// (e.g. Marmot Welcomes, kind 444) are rejected so they don't leak
+    /// into the DM stream.
     /// </summary>
-    private static readonly HashSet<int> DmFamilyKinds = new() { RumorKind, FileRumorKind, ReactionRumorKind };
+    private static readonly HashSet<int> DmFamilyKinds = new()
+    {
+        RumorKind,
+        FileRumorKind,
+        ReactionRumorKind,
+        DeletionRumorKind,
+    };
 
     /// <summary>
     /// Creates a NIP-17 chat-message direct message — two kind-1059 gift wraps
@@ -168,11 +177,89 @@ public static class Nip17
     }
 
     /// <summary>
+    /// Creates a NIP-09 deletion request wrapped as a NIP-17 DM. The
+    /// rumor is kind 5 with an <c>e</c> tag pointing at the <em>inner
+    /// rumor id</em> of the event being deleted, and a <c>k</c> tag
+    /// declaring the target's kind (14 chat / 15 file / 7 reaction).
+    /// Sending a clear kind-5 referencing a DM rumor id would leak the
+    /// conversation's existence, so deletions go through the same
+    /// dual-wrap (ToRecipient + ToSelf) pipeline as the message they
+    /// reference — apps tear down the conversation peer's view of the
+    /// deleted event AND keep their own clients in sync via the
+    /// self-wrap echo.
+    /// </summary>
+    /// <param name="targetRumorId">
+    /// The <strong>inner rumor id</strong> of the event being deleted
+    /// — not the outer kind-1059 gift-wrap id. Outer wrap ids differ
+    /// per recipient (ToRecipient ≠ ToSelf, and peers see their own
+    /// distinct outer ids); only the inner rumor id is shared and
+    /// identifies the same logical message everywhere.
+    /// </param>
+    /// <param name="targetKind">
+    /// The kind of the event being deleted (14 / 15 / 7). Emitted as
+    /// the NIP-09 <c>k</c> tag so receivers can route the deletion
+    /// without needing the original event in scope.
+    /// </param>
+    /// <param name="targetAuthor">
+    /// The conversation peer who has a copy of the event being deleted
+    /// — this is the wrap recipient, named for parity with
+    /// <see cref="CreateReaction"/>. (For NIP-09 spec validation, the
+    /// deletion is only legitimate when the receiver checks that the
+    /// resulting <c>UnwrappedDirectMessage.Sender</c> matches the
+    /// author of the targeted event; the library cannot enforce that
+    /// at the wrap layer.)
+    /// </param>
+    /// <param name="senderPrivateKey">The deleter's private key.</param>
+    /// <param name="reason">
+    /// Optional NIP-09 reason string; defaults to the empty content
+    /// when null.
+    /// </param>
+    /// <param name="additionalTags">Optional extra tags.</param>
+    /// <param name="createdAt">Optional real timestamp (unix seconds); defaults to now.</param>
+    /// <returns>Both signed gift-wrap events.</returns>
+    public static Nip17DirectMessage CreateDeletion(
+        EventId targetRumorId,
+        int targetKind,
+        PublicKey targetAuthor,
+        PrivateKey senderPrivateKey,
+        string? reason = null,
+        IReadOnlyList<IReadOnlyList<string>>? additionalTags = null,
+        long? createdAt = null)
+    {
+        ArgumentNullException.ThrowIfNull(targetRumorId);
+        ArgumentNullException.ThrowIfNull(targetAuthor);
+        ArgumentNullException.ThrowIfNull(senderPrivateKey);
+
+        var tags = new List<IReadOnlyList<string>>
+        {
+            new[] { "e", targetRumorId.ToHex() },
+            new[] { "k", targetKind.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+        };
+
+        if (additionalTags is not null)
+        {
+            foreach (var t in additionalTags)
+            {
+                tags.Add(t);
+            }
+        }
+
+        return WrapRumor(
+            DeletionRumorKind,
+            reason ?? string.Empty,
+            tags,
+            senderPrivateKey,
+            targetAuthor,
+            createdAt);
+    }
+
+    /// <summary>
     /// Low-level: wrap an arbitrary rumor (any kind, any content, any tags)
     /// as a NIP-17 DM. Use this when the high-level helpers
-    /// (<see cref="CreateDirectMessage"/>, <see cref="CreateReaction"/>)
-    /// don't cover what you need — for example, file messages (kind 15),
-    /// edits, typing indicators, or app-specific rumor kinds.
+    /// (<see cref="CreateDirectMessage"/>, <see cref="CreateReaction"/>,
+    /// <see cref="CreateDeletion"/>) don't cover what you need — for example,
+    /// file messages (kind 15), edits, typing indicators, or app-specific
+    /// rumor kinds.
     /// </summary>
     /// <param name="kind">The rumor kind.</param>
     /// <param name="content">The rumor content (UTF-8).</param>
@@ -182,7 +269,7 @@ public static class Nip17
     /// <param name="createdAt">Optional real timestamp (unix seconds); defaults to now.</param>
     /// <returns>Both signed gift-wrap events (recipient-addressed and self-addressed).</returns>
     /// <remarks>
-    /// If you wrap a kind outside the DM family (chat 14 / file 15 / reaction 7),
+    /// If you wrap a kind outside the DM family (chat 14 / file 15 / reaction 7 / deletion 5),
     /// <see cref="Unwrap"/> will reject it on receive. Use <see cref="Nip59.Unwrap"/>
     /// directly when you need full kind flexibility on both ends.
     /// </remarks>
@@ -214,7 +301,7 @@ public static class Nip17
 
     /// <summary>
     /// Unwraps a NIP-17 / NIP-59 gift wrap addressed to <paramref name="recipientPrivateKey"/>.
-    /// Accepts any DM-family rumor kind (chat 14 / file 15 / reaction 7);
+    /// Accepts any DM-family rumor kind (chat 14 / file 15 / reaction 7 / deletion 5);
     /// other kinds — e.g. Marmot Welcomes (444) — are rejected so they
     /// don't leak into the DM stream.
     /// </summary>
@@ -258,7 +345,7 @@ public sealed record Nip17DirectMessage(NostrEvent ToRecipient, NostrEvent ToSel
 /// </summary>
 /// <param name="Sender">The sender's x-only public key (taken from the verified seal).</param>
 /// <param name="RumorId">The canonical event id of the inner rumor — use this when targeting replies / reactions.</param>
-/// <param name="Kind">The rumor kind: <c>14</c> chat, <c>15</c> file, <c>7</c> reaction.</param>
+/// <param name="Kind">The rumor kind: <c>14</c> chat, <c>15</c> file, <c>7</c> reaction, <c>5</c> NIP-09 deletion.</param>
 /// <param name="Plaintext">The decrypted rumor content (chat body for kind 14/15; reaction symbol/emoji for kind 7).</param>
 /// <param name="CreatedAt">The real (non-jittered) timestamp from the inner rumor.</param>
 /// <param name="Tags">The rumor's tags (recipient <c>p</c>, reply <c>e</c> markers, reaction targets, etc.).</param>

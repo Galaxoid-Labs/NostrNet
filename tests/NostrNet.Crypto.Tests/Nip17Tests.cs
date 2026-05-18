@@ -224,6 +224,108 @@ public class Nip17Tests
     }
 
     [Fact]
+    public void CreateDeletion_ProducesKind5RumorWithEAndKTags()
+    {
+        // Alice sends bob a chat → bob "deletes" his copy (kind-5 referencing
+        // alice's chat rumor id, with k=14). The inner rumor exposes both
+        // tags so alice can apply the deletion in her own view.
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        var chat = Nip17.CreateDirectMessage("delete me", alice, bob.PublicKey);
+        var chatAsBob = Nip17.Unwrap(chat.ToRecipient, bob);
+
+        var deletionDm = Nip17.CreateDeletion(
+            targetRumorId: chatAsBob.RumorId,
+            targetKind: Nip17.RumorKind,
+            targetAuthor: alice.PublicKey,
+            senderPrivateKey: bob,
+            reason: "typo");
+
+        var asAlice = Nip17.Unwrap(deletionDm.ToRecipient, alice);
+
+        Assert.Equal(Nip17.DeletionRumorKind, asAlice.Kind);
+        Assert.Equal("typo", asAlice.Plaintext);
+        Assert.Contains(asAlice.Tags, t => t.Count >= 2 && t[0] == "e" && t[1] == chatAsBob.RumorId.ToHex());
+        Assert.Contains(asAlice.Tags, t => t.Count >= 2 && t[0] == "k" && t[1] == "14");
+        Assert.Equal(bob.PublicKey, asAlice.Sender);
+    }
+
+    [Fact]
+    public void CreateDeletion_OwnSelfWrapRoundTripsIdenticallyToRecipientWrap()
+    {
+        // Symmetric to CreateReaction's own-side roundtrip: the ToSelf wrap
+        // unwraps for the sender and surfaces the same inner kind-5 rumor
+        // they sent. This is what makes own-deletion surface to the
+        // sender's own SubscribeDirectMessagesAsync via the relay echo
+        // (NIP-59 wraps are symmetric, no synthetic emit needed).
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        var chat = Nip17.CreateDirectMessage("delete me", alice, bob.PublicKey);
+        var chatAsAlice = Nip17.Unwrap(chat.ToSelf, alice);
+
+        var deletionDm = Nip17.CreateDeletion(
+            targetRumorId: chatAsAlice.RumorId,
+            targetKind: Nip17.RumorKind,
+            targetAuthor: bob.PublicKey,
+            senderPrivateKey: alice);
+
+        var fromRecipient = Nip17.Unwrap(deletionDm.ToRecipient, bob);
+        var fromSelf = Nip17.Unwrap(deletionDm.ToSelf, alice);
+
+        Assert.Equal(fromRecipient.RumorId, fromSelf.RumorId);
+        Assert.Equal(Nip17.DeletionRumorKind, fromSelf.Kind);
+        Assert.Equal(alice.PublicKey, fromSelf.Sender);
+        Assert.Contains(fromSelf.Tags, t => t.Count >= 2 && t[0] == "e" && t[1] == chatAsAlice.RumorId.ToHex());
+    }
+
+    [Fact]
+    public void CreateDeletion_KTagRoundTripsForChatFileAndReactionTargets()
+    {
+        // The k tag tells the receiver which rumor kind is being deleted
+        // without needing the original event in scope. Verify each
+        // DM-family target kind round-trips its k tag exactly.
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        foreach (int targetKind in new[] { Nip17.RumorKind, Nip17.FileRumorKind, Nip17.ReactionRumorKind })
+        {
+            var fakeId = new EventId(Enumerable.Range(0, 32).Select(i => (byte)i).ToArray());
+
+            var deletion = Nip17.CreateDeletion(
+                targetRumorId: fakeId,
+                targetKind: targetKind,
+                targetAuthor: bob.PublicKey,
+                senderPrivateKey: alice);
+
+            var unwrapped = Nip17.Unwrap(deletion.ToRecipient, bob);
+            Assert.Contains(unwrapped.Tags, t =>
+                t.Count >= 2 && t[0] == "k" && t[1] == targetKind.ToString());
+        }
+    }
+
+    [Fact]
+    public void CreateDeletion_NullReason_YieldsEmptyContent()
+    {
+        // NIP-09 allows omitting the reason; the library emits empty
+        // content (not the string "null" or similar) when reason is null.
+        using var alice = PrivateKey.Generate();
+        using var bob = PrivateKey.Generate();
+
+        var fakeId = new EventId(new byte[32]);
+        var deletion = Nip17.CreateDeletion(
+            targetRumorId: fakeId,
+            targetKind: Nip17.ReactionRumorKind,
+            targetAuthor: bob.PublicKey,
+            senderPrivateKey: alice,
+            reason: null);
+
+        var unwrapped = Nip17.Unwrap(deletion.ToRecipient, bob);
+        Assert.Equal(string.Empty, unwrapped.Plaintext);
+    }
+
+    [Fact]
     public void Unwrap_RejectsRumorOutsideDmFamily()
     {
         // Wrap a kind-444 (Marmot Welcome) rumor and confirm Nip17.Unwrap

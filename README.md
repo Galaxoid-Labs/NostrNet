@@ -755,6 +755,48 @@ The receiver sees the reaction arrive on the same `SubscribeDirectMessagesAsync`
 stream, with `dm.Kind == Nip17.ReactionRumorKind`. Switch on it to render
 a reaction badge on the referenced message instead of as a new chat row.
 
+#### Deleting a DM (NIP-09 wrapped, never in the clear)
+
+A clear kind-5 referencing a DM's inner rumor id would leak the
+conversation's existence the same way a clear reaction would. NIP-09
+deletions for DM-family events use the same dual-wrap pipeline:
+
+```csharp
+await client.SendDirectMessageDeletionAsync(
+    targetRumorId: msg.RumorId,        // INNER rumor id, not outer wrap id
+    targetAuthor: msg.Sender,           // wrap recipient (the conversation peer)
+    targetKind: msg.Kind,               // 14 / 15 / 7
+    reason: "typo");                    // optional NIP-09 reason
+```
+
+The receiver sees `dm.Kind == Nip17.DeletionRumorKind` (= 5), with an
+`e` tag pointing at the deleted rumor id and a `k` tag declaring the
+target's kind. Apps apply the deletion to their local view:
+
+```csharp
+case Nip17.DeletionRumorKind:
+    string? targetId = dm.Tags.FirstValue("e");
+    string? targetKind = dm.Tags.FirstValue("k");
+    // NIP-09 is advisory: only honor when dm.Sender == author of the
+    // targeted event. The library can't enforce that here — apps look
+    // up the targeted rumor in their local store and compare authors.
+    if (targetId is not null && AuthorOf(targetId).Equals(dm.Sender))
+        Apply(deletedRumorId: targetId, deletedKind: targetKind);
+    break;
+```
+
+`SendDirectMessageDeletionAsync` doesn't need separate own-send echo
+plumbing — NIP-59 wraps are symmetric, so the sender's own
+`SubscribeDirectMessagesAsync` sees the deletion via the standard
+ToSelf-wrap echo (same path used by every other DM-family event since
+preview6).
+
+**Important: the `e` tag MUST reference the inner rumor id**, not the
+outer kind-1059 wrap id. Outer wrap ids differ per recipient
+(`ToRecipient` ≠ `ToSelf`, and peers see their own distinct outer
+ids); only the inner rumor id is shared and identifies the same
+logical message on both sides.
+
 #### Low-level: arbitrary rumor kinds
 
 For file messages (kind 15) or app-specific rumor kinds — typing indicators,

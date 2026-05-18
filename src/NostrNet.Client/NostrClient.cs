@@ -821,11 +821,61 @@ public sealed class NostrClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Sends a NIP-09 deletion request for a DM-family event (chat / file /
+    /// reaction) wrapped as a NIP-17 DM (kind 5 inside a kind-1059 gift
+    /// wrap). Deleting in the clear would leak the conversation's
+    /// existence; deletions go through the same dual-wrap pipeline as the
+    /// event they reference. The own-send surfaces to the caller's own
+    /// <see cref="SubscribeDirectMessagesAsync"/> via the standard
+    /// ToSelf-wrap echo — no extra emission needed (NIP-59 wraps are
+    /// symmetric, unlike MLS application messages).
+    /// </summary>
+    /// <param name="targetRumorId">
+    /// The <strong>inner rumor id</strong> of the event being deleted —
+    /// not the outer kind-1059 gift-wrap id. Outer wrap ids differ per
+    /// recipient; only the inner rumor id is shared between sender and
+    /// receiver and identifies the same logical message on both sides.
+    /// </param>
+    /// <param name="targetAuthor">
+    /// The conversation peer who has a copy of the event being deleted —
+    /// the wrap recipient. (For NIP-09 validation on receive, apps should
+    /// check that the surfaced <c>UnwrappedDirectMessage.Sender</c>
+    /// matches the author of the targeted event before acting on the
+    /// deletion. The library can't enforce that at the wrap layer because
+    /// the original rumor's author isn't in scope here.)
+    /// </param>
+    /// <param name="targetKind">
+    /// Kind of the event being deleted (14 chat / 15 file / 7 reaction).
+    /// Emitted as the NIP-09 <c>k</c> tag.
+    /// </param>
+    /// <param name="reason">Optional NIP-09 reason string; defaults to empty.</param>
+    /// <param name="cancellationToken">Cancels the in-flight publishes.</param>
+    /// <exception cref="InvalidOperationException">The client was constructed without a key.</exception>
+    public async Task<Nip17PublishResult> SendDirectMessageDeletionAsync(
+        EventId targetRumorId,
+        PublicKey targetAuthor,
+        int targetKind,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(targetRumorId);
+        ArgumentNullException.ThrowIfNull(targetAuthor);
+        EnsureNotDisposed();
+        var key = RequireKey(nameof(SendDirectMessageDeletionAsync));
+
+        Nip17DirectMessage pair = Nip17.CreateDeletion(
+            targetRumorId, targetKind, targetAuthor, key, reason: reason);
+
+        return await PublishDmPairAsync(pair, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Low-level: wrap and publish an arbitrary rumor as a NIP-17-shaped DM.
     /// Use for file messages (kind 15), edits, typing indicators, or any
     /// app-specific rumor kind. <see cref="SubscribeDirectMessagesAsync"/>
-    /// only surfaces DM-family kinds (chat 14 / file 15 / reaction 7); for
-    /// other kinds, consumers must use <see cref="Nip59.Unwrap"/> directly.
+    /// only surfaces DM-family kinds (chat 14 / file 15 / reaction 7 /
+    /// deletion 5); for other kinds, consumers must use
+    /// <see cref="Nip59.Unwrap"/> directly.
     /// </summary>
     /// <param name="recipient">The wrap recipient's x-only public key.</param>
     /// <param name="kind">The inner rumor kind.</param>

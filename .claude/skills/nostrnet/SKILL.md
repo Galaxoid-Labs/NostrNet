@@ -380,6 +380,12 @@ await foreach (var dm in client.SubscribeDirectMessagesAsync())
             string targetId = dm.Tags.FirstValue("e") ?? "";
             RenderReaction(dm.Sender, dm.Plaintext, targetId);
             break;
+        case Nip17.DeletionRumorKind:          // 5 — NIP-09 deletion request
+            string? deletedId = dm.Tags.FirstValue("e");
+            // NIP-09 is advisory: only honor when dm.Sender == author of target.
+            if (deletedId is not null && IsAuthorOf(deletedId, dm.Sender))
+                ApplyDeletion(deletedId);
+            break;
     }
 }
 ```
@@ -419,6 +425,28 @@ await client.SendDirectMessageReactionAsync(
 The receiver sees `dm.Kind == 7` arriving on the same stream — switch on
 kind in the consumer.
 
+### Deleting (NIP-09 wrapped, never in the clear)
+
+A clear kind-5 referencing a DM's inner rumor id would leak the
+conversation's existence the same way a clear reaction would. NIP-09
+deletions for DM-family events use the same dual-wrap pipeline:
+
+```csharp
+await client.SendDirectMessageDeletionAsync(
+    targetRumorId: receivedDm.RumorId,        // INNER rumor id, not outer wrap id
+    targetAuthor: receivedDm.Sender,           // wrap recipient (the conversation peer)
+    targetKind: receivedDm.Kind,               // 14 / 15 / 7
+    reason: "typo");                           // optional NIP-09 reason
+```
+
+**The `e` tag MUST point at the inner rumor id**, not the outer kind-1059
+wrap id. Outer wrap ids differ per recipient (`ToRecipient` ≠ `ToSelf` ≠
+peer's seen id); only the inner rumor id is shared across all parties.
+
+NIP-09 is **advisory** — the library cannot enforce that the deletion's
+sender authored the target. Consumers compare `dm.Sender` to the target's
+author (looked up in their local store) before applying.
+
 ### Low-level: arbitrary rumor kinds
 
 For file messages (kind 15), edits, typing indicators, read receipts, or
@@ -437,9 +465,9 @@ await client.SendWrappedDmAsync(
 ```
 
 `SubscribeDirectMessagesAsync` surfaces only DM-family kinds (chat 14 /
-file 15 / reaction 7) — non-family wraps like Marmot's kind-444 Welcomes
-are filtered out at unwrap time so they don't pollute the DM stream. If
-you need full kind flexibility on receive, drop down to
+file 15 / reaction 7 / deletion 5) — non-family wraps like Marmot's
+kind-444 Welcomes are filtered out at unwrap time so they don't pollute
+the DM stream. If you need full kind flexibility on receive, drop down to
 `Nip59.Unwrap(giftWrap, recipientKey)` directly.
 
 The **seal signature is re-verified on unwrap**, so `dm.Sender` can't be
